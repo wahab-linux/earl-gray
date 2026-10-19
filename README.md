@@ -1,58 +1,80 @@
 # Earl Gray
 
-A lightweight desktop app that combines PDFs in the order you choose. Built with Python, Tkinter/ttk, pypdf, and PDFium for first-page previews. Files stay on your computer; no accounts, servers, or uploads.
+A little order. One perfect PDF.
 
-## Windows quick start
+A lightweight Python desktop app with rounded cards, Google-inspired colors, real PDF previews, and light/dark mode. Import PDFs, folders, or ZIPs, pick the order, and save one combined PDF. Everything stays on your computer.
 
-Install Python 3.10 or newer from python.org with **Tcl/Tk and IDLE** enabled (the default). In a terminal in this folder:
+![Light mode](docs/grid.png)
 
-```powershell
-py -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python app.py
+## Run on Windows
+
+Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/windows/), with **Add Python to PATH** checked and **Tcl/Tk** included (the default). Close and reopen Command Prompt after installation.
+
+Open the downloaded project folder in File Explorer, type `cmd` in its address bar, and press Enter. Run:
+
+```bat
+python -m pip install -r requirements.txt
+python app.py
 ```
 
-Use **Add PDFs** to select multiple files, or **Open folder** to import PDFs directly inside a folder (not subfolders). Folder imports are sorted by filename. Other file types and duplicate paths are ignored. Switch between **Grid** and **List** to see first-page thumbnails, filenames, file sizes, and page counts. Tick the PDFs you want to include: **Merge #1**, **Merge #2**, and so on show the exact output order. Files start unchecked; each tick appends a file to the queue. Unticking removes it and compacts the numbers. Switching views preserves your choices.
+If your installation uses `py` instead of `python`, use `py` in both commands. Run these commands in the folder containing `app.py` and `requirements.txt`.
 
-Click a card and use **Move earlier / Move later**, or drag a checked card onto another checked card, to change the numbered merge order. The library stays in import order, so you can find files easily while the badges show the merge order. **Select all** appends readable, loaded PDFs in library order; **Deselect all** resets the selection. Remove unwanted files, then choose **Merge & save...**. The native Save As dialog lets you choose the output name and location and confirms overwriting an existing file.
+## Download without installing Python
 
-Previews load in the background. Locked, empty, and unreadable PDFs display an error and cannot be selected. Merging runs in a background thread so the window stays responsive. Source files cannot be overwritten. Failed merges preserve existing output. Password-protected PDFs must be unlocked with another tool first; damaged PDFs produce an error dialog.
+After a push to `main`, the **Windows app** workflow tests the app and builds an executable on Windows. Open this repository's **Actions** tab, choose the latest successful **Windows app** run, and download **EarlGray-Windows** under **Artifacts** (GitHub sign-in required). Extract the ZIP and double-click `EarlGray.exe`.
 
-## Download the Windows app
+The workflow must finish successfully before its download is available. The executable is unsigned; Windows may display a reputation warning.
 
-After a push to `main`, the **Windows app** workflow tests the app and builds an executable on Windows. Open this repository’s **Actions** tab, choose the latest successful **Windows app** run, and download **EarlGray-Windows** under **Artifacts** (GitHub sign-in is required). Extract the ZIP, then double-click `EarlGray.exe`. Build status is visible in Actions; a committed workflow alone does not mean a build has passed.
+## Make a PDF
 
-## Build a Windows executable locally
+1. **Add PDFs**, **Add ZIP**, or **Open folder**. Folder import includes PDFs directly inside the folder. ZIP import also finds PDFs inside nested folders; other file types are skipped.
+2. Switch between **Grid** and **List**. Both show first-page thumbnails, filenames, page counts, and sizes. Imported ZIP files also show their archive and subfolder.
+3. Click **Pick** on each PDF you want. The checkmark and number show the exact merge order. Picking another PDF appends it; unpicking closes the gap. **Select all** appends all readable, loaded PDFs in library order.
+4. Click a card to focus it, then use the up/down arrows to move it earlier/later. You can also drag a picked card onto another picked card. The library stays in import order while the numbers show output order.
+5. Click **Merge & save**, choose a name and location in the native Save As dialog, and save. Existing destinations require overwrite confirmation. Source PDFs cannot be overwritten.
 
-Build on Windows, using the same virtual environment:
+The circular moon/sun button switches the entire interface between **Light** and **Dark**. Your selection and merge order stay intact when switching themes or views.
 
-```powershell
-.venv\Scripts\python -m pip install pyinstaller==6.16.0
-.venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all pypdfium2 --name EarlGray app.py
-```
+The red trash button removes the focused card; **Clear workspace** removes all cards. Locked, empty, and unreadable PDFs show an error and cannot be picked. Unlock password-protected PDFs and ZIPs with another tool before importing them.
 
-The result is `dist\EarlGray.exe`. Recipients do not need Python. The executable is unsigned; Windows may display a reputation warning. A Windows build must be tested on Windows before distribution.
+## ZIP import
 
-## Views
+ZIPs are unpacked in the background into app-owned temporary storage, leaving the original archive unchanged. Original PDF names are displayed even when several subfolders contain the same filename. Imported PDFs remain available for the session; temporary storage is removed when the app closes. Re-adding the same archive does not duplicate its PDFs while they remain in the library. Nested ZIP archives are skipped.
 
-Grid view with numbered checkboxes:
+Each ZIP can contain up to 2,000 PDFs, with a maximum of 256 MB per PDF and 512 MB of extracted PDF data in total. Unsafe paths and PDF symlinks are rejected. Corrupt archives fail without changing your existing library.
 
-![Grid view](docs/grid.png)
+## Dark mode
 
-List view with the same selection and merge order:
+![Dark mode](docs/dark.png)
+
+## List view
 
 ![List view](docs/list.png)
 
+## Build a Windows executable
+
+Build on Windows:
+
+```bat
+python -m pip install -r requirements.txt pyinstaller==6.16.0
+python -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all pypdfium2 --collect-all customtkinter --hidden-import PIL._tkinter_finder --name EarlGray app.py
+```
+
+The result is `dist\EarlGray.exe`. `--collect-all customtkinter` includes the theme and font resources needed by the rounded interface. Recipients do not need Python. Test a Windows build on Windows before distribution.
+
 ## Development
 
-On Linux/macOS, use `python3 -m venv .venv`, `.venv/bin/python -m pip install -r requirements.txt`, and `.venv/bin/python app.py`. Linux may require the distribution's `python3-tk` package and a desktop display.
+Built with CustomTkinter, Pillow, pypdf, and PDFium. ZIP support uses Python's standard library. PDF inspection, rendering, extraction, and merging run on one background worker; the UI remains responsive. Failed merges preserve existing output. Tk images and cyclic garbage collection are cleaned up on the UI thread.
 
-Run the merge tests:
+For an isolated environment:
 
-```powershell
+```bat
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python app.py
 .venv\Scripts\python -m unittest discover -s tests -v
 ```
 
-On Linux/macOS use `.venv/bin/python -m unittest discover -s tests -v`.
+On Linux/macOS, create the environment with `python3 -m venv .venv` and use `.venv/bin/python` for installation, running, and testing. Linux requires a Tk-enabled Python and a desktop display; the distribution's `python3-tk` package may be needed.
 
-The test suite covers actual merges, metadata and thumbnail rendering, selection order, and the desktop Save flow. Desktop tests require a display (or Xvfb on Linux) and report skips when no display is available. Windows GUI behavior is also exercised in the Windows workflow.
+The tests cover actual merges, preview rendering, numbered selection, themes, view switching, ZIP import, extraction limits, unsafe paths, cleanup, and saving through the desktop UI. Desktop tests require a display or Xvfb and explicitly report a skip when no display exists. The Windows workflow runs the same suite before packaging, then checks that the packaged app opens and closes from outside the checkout before uploading the executable.

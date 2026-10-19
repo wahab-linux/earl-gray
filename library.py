@@ -10,11 +10,18 @@ from pypdf import PdfReader
 @dataclass(eq=False)
 class PdfItem:
     path: Path
+    display_name: str = ""
+    origin: str = ""
+    archive: Path | None = None
     size: int = 0
     pages: int = 0
     preview: Image.Image | None = None
     ready: bool = False
     error: str = ""
+
+    @property
+    def name(self):
+        return self.display_name or self.path.name
 
 
 def inspect_pdf(path):
