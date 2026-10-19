@@ -24,7 +24,7 @@ class ArchiveStore:
         self._temporary = tempfile.TemporaryDirectory(prefix="earl-gray-")
         self.root = Path(self._temporary.name)
 
-    def extract(self, archive):
+    def extract(self, archive, progress=None):
         """Import PDF and PPTX members only; archive paths are never used as output paths."""
         archive = Path(archive).resolve()
         folder = Path(tempfile.mkdtemp(prefix="zip-", dir=self.root))
@@ -33,6 +33,8 @@ class ArchiveStore:
                 members = [entry for entry in source.infolist() if not entry.is_dir() and entry.filename.lower().endswith((".pdf", ".pptx"))]
                 if len(members) > MAX_DOCUMENTS:
                     raise ValueError(f"This ZIP contains too many documents (maximum {MAX_DOCUMENTS}).")
+                if progress:
+                    progress("Checking archive", f"Found {len(members)} supported document(s)", 0)
                 total = 0
                 for entry in members:
                     relative = PurePosixPath(entry.filename.replace("\\", "/"))
@@ -53,6 +55,8 @@ class ArchiveStore:
                     relative = PurePosixPath(entry.filename.replace("\\", "/"))
                     # Generated names also avoid Windows reserved names and duplicate basenames.
                     destination = folder / f"{index:05d}{relative.suffix.lower()}"
+                    if progress:
+                        progress("Extracting archive", f"{index + 1} of {len(members)}: {relative.name}", actual_total / total if total else 0)
                     written = 0
                     with source.open(entry) as incoming, destination.open("wb") as outgoing:
                         while chunk := incoming.read(1024 * 1024):
@@ -61,6 +65,8 @@ class ArchiveStore:
                             if written > MAX_DOCUMENT_BYTES or actual_total > MAX_TOTAL_BYTES:
                                 raise ValueError("This ZIP exceeds the document import size limits.")
                             outgoing.write(chunk)
+                            if progress:
+                                progress("Extracting archive", f"{relative.name}: {written:,} bytes extracted", actual_total / total if total else 0)
                     parent = "" if str(relative.parent) == "." else f" / {relative.parent}"
                     imported.append(ImportedDocument(destination, relative.name, f"{archive.name}{parent}", archive))
             return imported

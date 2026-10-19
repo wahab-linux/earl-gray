@@ -56,6 +56,28 @@ class MergeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Not a PDF"):
             merge_pdfs([self.folder / "file.txt"], self.output)
 
+    def test_named_sections_point_to_each_documents_first_page(self):
+        with PdfWriter() as writer:
+            writer.add_blank_page(width=200, height=300)
+            writer.add_blank_page(width=300, height=300)
+            writer.write(self.b)
+        merge_pdfs([self.b, self.a], self.output, ["Workshop.pptx", "Notes.pdf"])
+        reader = PdfReader(self.output)
+        self.assertEqual([entry.title for entry in reader.outline], ["Workshop.pptx", "Notes.pdf"])
+        self.assertEqual([reader.get_destination_page_number(entry) for entry in reader.outline], [0, 2])
+        self.assertEqual(len(reader.pages), 3)
+        self.assertEqual(reader.trailer["/Root"]["/PageMode"], "/UseOutlines")
+
+    def test_default_sections_use_original_pdf_names(self):
+        merge_pdfs([self.b, self.a], self.output)
+        self.assertEqual([entry.title for entry in PdfReader(self.output).outline], ["b.pdf", "a.pdf"])
+
+    def test_section_title_mismatch_does_not_change_existing_output(self):
+        self.output.write_bytes(b"existing output")
+        with self.assertRaisesRegex(ValueError, "one section title"):
+            merge_pdfs([self.a], self.output, ["one", "two"])
+        self.assertEqual(self.output.read_bytes(), b"existing output")
+
 
 if __name__ == "__main__":
     unittest.main()

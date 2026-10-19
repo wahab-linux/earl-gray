@@ -25,10 +25,12 @@ class PdfItem:
         return self.display_name or self.path.name
 
 
-def inspect_pdf(path):
+def inspect_pdf(path, progress=None):
     """Read metadata and a bounded first-page preview; call on one worker thread."""
     path = Path(path)
     size = path.stat().st_size
+    if progress:
+        progress("Reading PDF", "Checking encryption and counting pages")
     # Match the merger's password policy and detect unreadable page trees early.
     with path.open("rb") as source:
         reader = PdfReader(source)
@@ -37,6 +39,8 @@ def inspect_pdf(path):
         pages = len(reader.pages)
     if not pages:
         raise ValueError("This PDF has no pages.")
+    if progress:
+        progress("Rendering thumbnail", f"{pages} page(s) found; rendering the first page")
     with pdfium.PdfDocument(path) as document:
         page = document[0]
         try:

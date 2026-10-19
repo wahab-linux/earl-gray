@@ -40,13 +40,13 @@ class SlideConverter:
         self.root.mkdir(parents=True, exist_ok=True)
         self.logger = logger or logging.getLogger("earlgray")
 
-    def prepare(self, source):
+    def prepare(self, source, progress=None):
         source = Path(source)
-        pdf = self.convert(source) if source.suffix.lower() == ".pptx" else source
-        _, pages, preview = inspect_pdf(pdf)
+        pdf = self.convert(source, progress=progress) if source.suffix.lower() == ".pptx" else source
+        _, pages, preview = inspect_pdf(pdf, progress=progress)
         return pdf, source.stat().st_size, pages, preview
 
-    def convert(self, source):
+    def convert(self, source, progress=None):
         source = Path(source).resolve()
         work = Path(tempfile.mkdtemp(prefix="deck-", dir=self.root))
         target = work / f"{source.stem}.pdf"
@@ -61,6 +61,8 @@ class SlideConverter:
                 renderer = "Microsoft PowerPoint"
             else:
                 raise RuntimeError("To import PPTX, install LibreOffice (free) or Microsoft PowerPoint on Windows, then try again. PDFs work without either app.")
+            if progress:
+                progress("Converting PowerPoint slides", f"Rendering slides with {renderer}; large decks can take longer")
             self.logger.info("Converting slides with %s: %s", renderer, source)
             result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), cwd=work)

@@ -1,6 +1,9 @@
 """Earl Gray: a rounded, local-first desktop PDF workspace."""
 from concurrent.futures import ThreadPoolExecutor
 import gc
+from queue import Empty, Queue
+from threading import Event
+import time
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, font
@@ -12,6 +15,8 @@ from archives import ArchiveStore
 from library import Library, format_size
 from conversion import SlideConverter
 from diagnostics import DebugLog
+from importing import prepare_batch
+from loading import LoadingScreen
 from pdf_merge import merge_pdfs
 from ui import icon, empty_art, CircleButton, detach_images
 
@@ -40,8 +45,18 @@ class App:
         self.converter = SlideConverter(self.archives.root / "slides", self.debug.logger)
         # Both ZIP import and PDFium rendering run on this one worker.
         self.executor = ThreadPoolExecutor(max_workers=1)
-        self.pending = []
-        self.imports = []
+        self.importing = False
+        self.import_future = None
+        self.import_events = Queue()
+        self.import_cancel = Event()
+        self.batch_items = {}
+        self.last_import_errors = []
+        self.cards = {}
+        self.empty_frame = None
+        self.layout_signature = None
+        self.scroll_positions = {"grid": 0, "list": 0}
+        self.assembly_job = None
+        self.close_after_import = False
         self.photos = {}
         self.active = None
         self.busy = False
@@ -70,8 +85,8 @@ class App:
         self.render()
         # Tk image finalizers must run on the UI thread, even during cyclic GC.
         gc.disable()
-        self.preview_job = root.after(80, self.poll_previews)
-        self.collect_job = root.after(1000, self.collect_images)
+        self.preview_job = root.after(80, self.poll_import)
+        self.collect_job = root.after(3000, self.collect_images)
 
     def set_window_icon(self):
         import sys
@@ -99,9 +114,10 @@ class App:
             messagebox.showerror("Could not open terminal", f"{error}\n\nLog file: {self.debug.path}")
 
     def collect_images(self):
-        gc.collect()
+        if not self.importing and not self.busy:
+            gc.collect(0)
         if not self.closed:
-            self.collect_job = self.root.after(1000, self.collect_images)
+            self.collect_job = self.root.after(3000, self.collect_images)
 
     def text(self, parent, text="", size=13, bold=False, color=INK, **kwargs):
         return ctk.CTkLabel(parent, text=text, text_color=color, font=(self.font, size, "bold" if bold else "normal"), **kwargs)
@@ -220,16 +236,22 @@ class App:
                                           fg_color=SOFT)
         self.progress.grid(row=7, column=0, sticky="ew", pady=(6, 0))
         self.progress.set(0)
+        self.loading = LoadingScreen(main, self)
+        self.loading.grid(row=3, column=0, sticky="nsew")
+        self.loading.grid_remove()
 
     def toggle_theme(self):
         self.mode = "dark" if self.mode == "light" else "light"
         ctk.set_appearance_mode(self.mode)
         self.theme_button.configure(image=icon("moon", size=22) if self.mode == "dark" else icon("sun", "#E6A700", 22))
         self.mode_label.configure(text=f"{self.mode.title()} mode")
+        self.loading.apply_theme()
         self.debug.logger.debug("Theme changed to %s", self.mode)
         self.render()
 
     def change_view(self, value):
+        if self.importing or self.busy:
+            return
         self.view.set(value.lower())
         self.render()
 
@@ -249,62 +271,144 @@ class App:
                 self.debug.logger.exception("Could not read folder: %s", folder)
                 messagebox.showerror("Cannot open folder", str(error))
 
-    def queue_previews(self, paths):
-        added = self.library.add(paths)
-        for item in added:
-            self.debug.logger.info("Loading document: %s", item.path)
-            self.pending.append((item, self.executor.submit(self.converter.prepare, item.path)))
-        return added
-
     def add(self, paths):
-        if self.busy:
+        if self.busy or self.importing:
             return
-        paths = [Path(path).resolve() for path in paths]
-        self.queue_previews(path for path in paths if path.suffix.lower() in (".pdf", ".pptx"))
-        known = {item.archive for item in self.library.items if item.archive}
-        known.update(path for path, _ in self.imports)
+        known = {item.path for item in self.library.items}
+        known.update(item.archive for item in self.library.items if item.archive)
+        selected = []
         for path in paths:
-            if path.suffix.lower() == ".zip" and path not in known:
-                self.debug.logger.info("Importing ZIP: %s", path)
-                self.imports.append((path, self.executor.submit(self.archives.extract, path)))
+            path = Path(path).resolve()
+            if path.suffix.lower() in (".pdf", ".pptx", ".zip") and path not in known:
+                selected.append(path)
                 known.add(path)
-        self.render()
+        if not selected:
+            return
+        self.importing = True
+        self.import_cancel = Event()
+        self.import_events = Queue()
+        self.batch_items = {}
+        self.last_import_errors = []
+        self.scroll_positions[self.view.get()] = self.canvas.yview()[0]
+        self.loading.start()
+        self.content.grid_remove()
+        self.loading.grid()
+        self.sync_controls()
+        self.summary()
+        self.debug.logger.info("Preparing an import batch: %d input(s)", len(selected))
+        self.import_future = self.executor.submit(prepare_batch, selected, self.archives, self.converter,
+                                                   self.import_events, self.import_cancel)
 
-    def poll_previews(self):
-        changed = False
-        for path, future in list(self.imports):
-            if not future.done():
-                continue
-            self.imports.remove((path, future))
+    def cancel_import(self):
+        if self.importing:
+            self.import_cancel.set()
+            self.loading.stage.configure(text="Canceling remaining files")
+            self.loading.detail.configure(text="Finishing the current file safely. Already prepared files will be kept.")
+            self.loading.cancel_button.configure(state="disabled", text="Cancel requested")
+
+    def poll_import(self):
+        for _ in range(150):
             try:
-                imported = future.result()
-                for entry in imported:
-                    for item in self.queue_previews([entry.path]):
-                        item.display_name, item.origin, item.archive = entry.name, entry.source, entry.archive
-                self.notice.set(f"{path.name}: added {len(imported)} document(s). Other file types were skipped.")
-                self.debug.logger.info("ZIP imported: %s (%d documents)", path.name, len(imported))
-            except Exception as error:
-                self.debug.logger.exception("ZIP import failed: %s", path)
-                self.notice.set(f"Could not import {path.name}. Your existing files are unchanged.")
-                messagebox.showerror("Could not import ZIP", str(error))
-            changed = True
-        for item, future in list(self.pending):
-            if not future.done():
-                continue
-            self.pending.remove((item, future))
-            if item not in self.library.items:
-                continue
-            try:
-                item.pdf_path, item.size, item.pages, item.preview = future.result()
-                self.debug.logger.info("Document ready: %s (%d pages)", item.name, item.pages)
-                item.ready = True
-            except Exception as error:
-                item.error = str(error) or "Cannot read this document."
-                self.debug.logger.exception("Document preparation failed: %s", item.name)
-            changed = True
-        if changed:
-            self.render()
-        self.preview_job = self.root.after(80, self.poll_previews)
+                event = self.import_events.get_nowait()
+            except Empty:
+                break
+            self.handle_import_event(event)
+        if self.closed:
+            return
+        if self.importing:
+            self.loading.tick()
+        self.preview_job = self.root.after(50, self.poll_import)
+
+    def handle_import_event(self, event):
+        kind = event["kind"]
+        if kind in ("archive", "archive_done", "archive_error"):
+            name = event["name"]
+            detail = event.get("detail", "")
+            stage = event.get("stage", "Archive ready" if kind == "archive_done" else "Archive failed")
+            self.loading.row(("zip", event["path"]), name, f"{stage}: {detail}")
+            if not self.import_cancel.is_set():
+                self.loading.stage.configure(text=stage)
+                self.loading.detail.configure(text=f"{name} — {detail}")
+                self.loading.count.configure(text="Discovering documents in archives")
+                if event.get("fraction") is not None:
+                    self.loading.bar.set(event["fraction"])
+        elif kind == "discovered":
+            sources = {source.path: source for source in event["sources"]}
+            for item in self.library.add(sources):
+                source = sources[item.path]
+                item.display_name, item.origin, item.archive = source.name, source.origin, source.archive
+                self.batch_items[item.path] = item
+                self.loading.row(item.path, item.name, "Queued")
+            self.loading.bar.set(0)
+            self.loading.count.configure(text=f"0 of {len(self.batch_items)} files prepared")
+        elif kind == "stage":
+            self.loading.row(event["path"], event["name"], event["stage"])
+            if not self.import_cancel.is_set():
+                self.loading.stage.configure(text=event["stage"])
+                self.loading.detail.configure(text=f"{event['name']} — {event['detail']}")
+        elif kind == "ready":
+            item = self.batch_items[event["path"]]
+            item.pdf_path, item.size, item.pages, item.preview = event["result"]
+            item.ready = True
+            self.loading.row(item.path, item.name, f"Ready · {item.pages} pages · {format_size(item.size)}")
+            self.debug.logger.info("Prepared: %s (%d pages)", item.name, item.pages)
+        elif kind == "error":
+            item = self.batch_items[event["path"]]
+            item.error = event["detail"]
+            self.loading.row(item.path, item.name, f"Failed: {item.error}")
+        elif kind == "count":
+            self.loading.bar.set(event["completed"] / event["total"] if event["total"] else 0)
+            self.loading.count.configure(text=f"{event['completed']} of {event['total']} files processed · {event['ready']} ready · {event['failed']} errors")
+        elif kind == "done":
+            self.last_import_errors = event["errors"]
+            for item in list(self.batch_items.values()):
+                if not item.ready and not item.error:
+                    self.library.remove(item)
+            self.import_result = event
+            self.assembly_items = [item for item in self.library.items if item not in self.cards]
+            self.assembly_total = len(self.assembly_items)
+            self.loading.stage.configure(text="Preparing your file browser")
+            self.loading.detail.configure(text="Caching thumbnails and arranging cards before opening the library.")
+            self.loading.cancel_button.configure(state="disabled")
+            self.assembly_job = self.root.after(1, self.assemble_cards)
+
+    def assemble_cards(self):
+        self.assembly_job = None
+        if self.close_after_import:
+            self.importing = False
+            self.close()
+            return
+        grid = self.view.get() == "grid"
+        for _ in range(min(4, len(self.assembly_items))):
+            item = self.assembly_items.pop(0)
+            card = self.card(item, grid)
+            self.cards[item] = card
+            if item.preview:
+                self.photo(item, not grid)
+        count = self.assembly_total - len(self.assembly_items)
+        self.loading.count.configure(text=f"{count} of {self.assembly_total} cards cached")
+        self.loading.bar.set(count / self.assembly_total if self.assembly_total else 1)
+        if self.assembly_items:
+            self.assembly_job = self.root.after(10, self.assemble_cards)
+            return
+        gc.collect()  # Release worker/old image cycles behind the loading screen.
+        self.importing = False
+        self.loading.grid_remove()
+        self.content.grid()
+        self.sync_controls()
+        result = self.import_result
+        prefix = "Import canceled" if result["canceled"] else "Import complete"
+        self.notice.set(f"{prefix}: {result['ready']} files ready, {len(result['errors'])} errors in {result['elapsed']:.1f}s."
+                        + (" Review the failed files or open the debug terminal." if result["errors"] else " Pick the files you want to merge."))
+        self.debug.logger.info("%s: %d ready, %d errors", prefix, result["ready"], len(result["errors"]))
+        self.render()
+        if self.close_after_import:
+            self.close()
+
+    def sync_controls(self):
+        for control in self.controls:
+            if control.winfo_exists():
+                control.configure(state="disabled" if self.busy or self.importing else "normal")
 
     def resize(self, event):
         columns = max(1, int(event.width / self.content._get_widget_scaling()) // 240)
@@ -316,27 +420,50 @@ class App:
 
     def summary(self):
         chosen = self.library.chosen
-        loading = sum(not item.ready and not item.error for item in self.library.items)
         errors = sum(bool(item.error) for item in self.library.items)
         self.count_label.configure(text=f"Your library  /  {len(self.library.items)}")
-        self.selection_label.configure(text=f"{len(chosen)} file{'s' if len(chosen) != 1 else ''} picked" if chosen else "Ready when you are")
+        self.selection_label.configure(text="Preparing your files" if self.importing else "Saving your PDF" if self.busy else f"{len(chosen)} file{'s' if len(chosen) != 1 else ''} picked" if chosen else "Ready when you are")
         text = f"{sum(item.pages for item in chosen)} pages  /  {format_size(sum(item.size for item in chosen))}"
         if self.busy:
             text = "Making your PDF..."
-        elif self.imports:
-            text = f"Unpacking {len(self.imports)} ZIP(s)..."
-        elif loading:
-            text += f"  /  {loading} loading"
+        elif self.importing:
+            text = "Preparing files. Merge unlocks when this finishes."
         elif errors:
             text += f"  /  {errors} unreadable"
         self.status.set(text)
-        self.merge_button.configure(state="disabled" if self.busy or not chosen else "normal")
-        if self.busy or self.imports or loading:
+        enabled = not self.busy and not self.importing and bool(chosen)
+        self.merge_button.configure(state="normal" if enabled else "disabled",
+                                    text="Preparing files" if self.importing else "Merging..." if self.busy else "Merge & save",
+                                    fg_color=GREEN if enabled else SOFT,
+                                    image=icon("arrow", "white" if enabled else MUTED))
+        if self.busy:
             self.progress.grid()
             self.progress.start()
         else:
             self.progress.stop()
             self.progress.grid_remove()
+
+    @property
+    def visible_cards(self):
+        return [self.cards[item] for item in self.library.items if item in self.cards]
+
+    def update_selection(self):
+        positions = {item: index + 1 for index, item in enumerate(self.library.chosen)}
+        for item, card in self.cards.items():
+            position = positions.get(item)
+            enabled = not (self.busy or self.importing or not item.ready or item.error)
+            state = (position, item is self.active, enabled)
+            if card.selection_state == state:
+                continue
+            card.selection_state = state
+            card.merge_position = position
+            card.configure(fg_color=("#F7FAFF", "#1E2D43") if position else SURFACE,
+                           border_color=BLUE if item is self.active else BORDER)
+            card.selection_button.configure(text=str(position) if position else "Pick",
+                image=icon("check", "white", 14) if position else icon("circle", MUTED, 16),
+                fg_color=BLUE if position else SOFT, hover_color="#185ABC" if position else BORDER,
+                text_color="white" if position else MUTED, state="normal" if enabled else "disabled")
+        self.summary()
 
     def render(self):
         if self.closed:
@@ -344,34 +471,68 @@ class App:
         if self.resize_job:
             self.root.after_cancel(self.resize_job)
             self.resize_job = None
-        offset = self.canvas.yview()[0]
-        for child in self.content.winfo_children():
-            detach_images(child)
-            child.destroy()
+        if self.importing:
+            self.summary()
+            return
+        items = set(self.library.items)
+        for item in list(self.cards):
+            if item not in items:
+                card = self.cards.pop(item)
+                detach_images(card)
+                card.destroy()
         self.controls = [control for control in self.controls if control.winfo_exists()]
-        for column in range(max(self.content.grid_size()[0], self.columns, 1) + 1):
-            self.content.columnconfigure(column, weight=0, uniform="")
-        self.layout_switch.set(self.view.get().title())
-        if not self.library.items:
-            self.content.columnconfigure(0, weight=1)
-            empty = ctk.CTkFrame(self.content, fg_color=SURFACE, corner_radius=24, border_width=1, border_color=BORDER)
-            empty.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-            self.text(empty, "", image=empty_art()).pack(pady=(32, 4))
-            self.text(empty, "Meet your next perfectly ordered PDF.", 20, True).pack(pady=(0, 6))
-            self.text(empty, "Bring PDFs, PowerPoint slides, or a ZIP full of them.\nWe'll help you put the pieces together.", 13, color=MUTED, justify="center").pack()
-            self.button(empty, "Add your first files", self.add_files, BLUE, icon("plus"), width=182,
-                        text_color="white", hover_color="#185ABC").pack(pady=(20, 32))
-        else:
-            grid = self.view.get() == "grid"
-            columns = max(self.columns, 1) if grid else 1
+        grid = self.view.get() == "grid"
+        columns = max(self.columns, 1) if grid and self.library.items else 1
+        signature = (grid, columns, tuple(self.library.items))
+        if signature != self.layout_signature:
+            previous_view = "grid" if self.layout_signature is None or self.layout_signature[0] else "list"
+            self.scroll_positions[previous_view] = self.canvas.yview()[0]
+            for column in range(max(self.content.grid_size()[0], self.columns, 1) + 1):
+                self.content.columnconfigure(column, weight=0, uniform="")
             for column in range(columns):
                 self.content.columnconfigure(column, weight=1, uniform="cards")
-            for index, item in enumerate(self.library.items):
-                self.card(item, grid).grid(row=index // columns, column=index % columns, sticky="nsew", padx=6, pady=6)
-        self.summary()
-        self.content.update_idletasks()
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        self.canvas.yview_moveto(offset)
+            if self.library.items:
+                if self.empty_frame:
+                    self.empty_frame.grid_remove()
+                for index, item in enumerate(self.library.items):
+                    if item not in self.cards:
+                        card = self.card(item, grid)
+                        self.cards[item] = card
+                    self.layout_card(self.cards[item], grid)
+                    self.cards[item].grid(row=index // columns, column=index % columns,
+                                                   sticky="nsew", padx=6, pady=6)
+            else:
+                if self.empty_frame is None:
+                    self.empty_frame = self.build_empty()
+                self.empty_frame.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+            self.layout_signature = signature
+            offset = self.scroll_positions[self.view.get()]
+            self.restore_scroll(offset, signature)
+        self.layout_switch.set(self.view.get().title())
+        self.update_selection()
+
+    def restore_scroll(self, offset, signature, previous=None):
+        if self.closed or signature != self.layout_signature:
+            return
+        # Wait for real geometry stability, without forcing an intermediate paint.
+        geometry = (self.canvas.bbox("all"), self.content.winfo_reqheight(),
+                    tuple((card.winfo_height(), card.winfo_reqheight(),
+                           card.preview_frame.winfo_height(), card.preview_frame.winfo_reqheight(),
+                           card.details.winfo_reqheight(), card.title_label.winfo_reqheight())
+                          for card in self.visible_cards))
+        if geometry != previous:
+            self.root.after_idle(lambda: self.restore_scroll(offset, signature, geometry))
+        else:
+            self.canvas.yview_moveto(offset)
+
+    def build_empty(self):
+        empty = ctk.CTkFrame(self.content, fg_color=SURFACE, corner_radius=24, border_width=1, border_color=BORDER)
+        self.text(empty, "", image=empty_art()).pack(pady=(32, 4))
+        self.text(empty, "Meet your next perfectly ordered PDF.", 20, True).pack(pady=(0, 6))
+        self.text(empty, "Bring PDFs, PowerPoint slides, or a ZIP full of them.\nWe'll help you put the pieces together.", 13, color=MUTED, justify="center").pack()
+        self.button(empty, "Add your first files", self.add_files, BLUE, icon("plus"), width=182,
+                    text_color="white", hover_color="#185ABC").pack(pady=(20, 32))
+        return empty
 
     def photo(self, item, grid):
         key = (item.path, grid)
@@ -386,44 +547,77 @@ class App:
         position = self.library.chosen.index(item) + 1 if checked else None
         card = ctk.CTkFrame(self.content, fg_color=("#F7FAFF", "#1E2D43") if checked else SURFACE,
                             corner_radius=18, border_color=BLUE if item is self.active else BORDER,
-                            border_width=2 if item is self.active else 1)
+                            border_width=2)
         card.pdf_item = item
+        card.selection_state = None
         header = ctk.CTkFrame(card, fg_color="transparent")
         header.grid(row=0, column=0 if grid else 2, sticky="ew", padx=14, pady=(12, 6))
         self.text(header, ("ZIP / " if item.archive else "") + item.path.suffix[1:].upper(), 10, True, ("#A1241C", "#F28B82"),
                   fg_color=("#FCE8E6", "#432B34"), corner_radius=6, width=78 if item.archive else 46, height=23).pack(side="left")
         pick = ctk.CTkButton(header, text=str(position) if checked else "Pick", command=lambda: self.toggle(item),
                             image=icon("check", "white", 14) if checked else icon("circle", MUTED, 16),
-                            width=58, height=30, corner_radius=15, fg_color=BLUE if checked else SOFT,
+                            width=84, height=30, corner_radius=15, fg_color=BLUE if checked else SOFT,
                             hover_color="#185ABC" if checked else BORDER, text_color="white" if checked else MUTED,
                             font=(self.font, 12, "bold"))
         pick.pack(side="right", padx=(10, 0))
         card.selection_button = pick
         card.merge_position = position
-        if self.busy or not item.ready or item.error:
+        if self.busy or self.importing or not item.ready or item.error:
             pick.configure(state="disabled")
         preview = ctk.CTkFrame(card, fg_color=SOFT, corner_radius=12, height=166 if grid else 80, width=90)
         preview.grid(row=1 if grid else 0, column=0, rowspan=1 if grid else 2, sticky="nsew", padx=14, pady=6 if grid else 14)
         preview.grid_propagate(False)
         preview.grid_rowconfigure(0, weight=1)
         preview.grid_columnconfigure(0, weight=1)
-        self.text(preview, "" if item.preview else "PDF" if item.error else "Loading...", size=12,
-                  image=self.photo(item, grid) if item.preview else None, color=MUTED).grid(row=0, column=0, pady=10)
+        preview_label = self.text(preview, "" if item.preview else "PDF" if item.error else "Loading...", size=12,
+                  image=self.photo(item, grid) if item.preview else None, color=MUTED)
+        preview_label.grid(row=0, column=0, pady=10)
         details = ctk.CTkFrame(card, fg_color="transparent")
         details.grid(row=2 if grid else 0, column=0 if grid else 1, rowspan=1 if grid else 2, sticky="nsew", padx=16 if grid else (4, 0), pady=(8, 14) if grid else 16)
         card.columnconfigure(0 if grid else 1, weight=1)
-        self.text(details, item.name, 13, True, height=22, wraplength=190 if grid else 320, justify="left", anchor="w").pack(fill="x")
+        title_label = self.text(details, item.name, 13, True, height=22, wraplength=190 if grid else 320, justify="left", anchor="w")
+        title_label.pack(fill="x")
         unit = "slide" if item.path.suffix.lower() == ".pptx" else "page"
         metadata = f"{item.pages} {unit}{'s' if item.pages != 1 else ''}  /  {format_size(item.size)}" if item.ready else "Converting slides..." if item.path.suffix.lower() == ".pptx" else "Reading your PDF..."
         self.text(details, metadata if not item.error else "Can't include this file", 11, height=18, color=MUTED if not item.error else ("#B3261E", "#F28B82"), anchor="w").pack(fill="x", pady=(4, 0))
+        card.error_label = None
         if item.error:
-            self.text(details, item.error, 11, color=("#B3261E", "#F28B82"), wraplength=190 if grid else 320, justify="left").pack(anchor="w", pady=(4, 0))
-        elif item.origin:
-            self.text(details, item.origin, 10, height=16, color=MUTED, wraplength=190 if grid else 320, justify="left", anchor="w").pack(fill="x", pady=(6, 0))
-        elif not grid:
-            self.text(details, str(item.path.parent), 10, height=16, color=MUTED, wraplength=320, justify="left", anchor="w").pack(fill="x", pady=(6, 0))
+            card.error_label = self.text(details, item.error, 11, color=("#B3261E", "#F28B82"), wraplength=190 if grid else 320, justify="left")
+            card.error_label.pack(anchor="w", pady=(4, 0))
+        source_label = self.text(details, item.origin or str(item.path.parent), 10, height=16,
+                                 color=MUTED, wraplength=190 if grid else 320, justify="left", anchor="w")
+        if not item.error and (item.origin or not grid):
+            source_label.pack(fill="x", pady=(6, 0))
+        card.header, card.preview_frame, card.details = header, preview, details
+        card.preview_label, card.title_label, card.source_label = preview_label, title_label, source_label
+        card.current_layout = grid
         self.bind_card(card, item, pick)
         return card
+
+    def layout_card(self, card, grid):
+        if card.current_layout == grid:
+            return
+        card.current_layout = grid
+        item = card.pdf_item
+        card.header.grid_configure(row=0, column=0 if grid else 2)
+        card.preview_frame.grid_configure(row=1 if grid else 0, column=0, rowspan=1 if grid else 2,
+                                          pady=6 if grid else 14)
+        card.preview_frame.configure(height=166 if grid else 80)
+        card.details.grid_configure(row=2 if grid else 0, column=0 if grid else 1,
+                                     rowspan=1 if grid else 2, padx=16 if grid else (4, 0),
+                                     pady=(8, 14) if grid else 16)
+        card.columnconfigure(0, weight=1 if grid else 0)
+        card.columnconfigure(1, weight=0 if grid else 1)
+        card.title_label.configure(wraplength=190 if grid else 320)
+        card.source_label.configure(wraplength=190 if grid else 320)
+        if card.error_label:
+            card.error_label.configure(wraplength=190 if grid else 320)
+        elif item.origin or not grid:
+            card.source_label.pack(fill="x", pady=(6, 0))
+        else:
+            card.source_label.pack_forget()
+        if item.preview:
+            card.preview_label.configure(image=self.photo(item, grid))
 
     def bind_card(self, widget, item, pick):
         if widget is pick:
@@ -434,12 +628,12 @@ class App:
             self.bind_card(child, item, pick)
 
     def press(self, event, item):
-        if not self.busy:
+        if not self.busy and not self.importing:
             self.active = item
             self.drag_source = (item, event.x_root, event.y_root)
 
     def release(self, event):
-        if self.busy or self.drag_source is None:
+        if self.busy or self.importing or self.drag_source is None:
             return
         item, x, y = self.drag_source
         self.drag_source = None
@@ -449,31 +643,31 @@ class App:
                 widget = widget.master
             if widget is not None:
                 self.library.drop(item, widget.pdf_item)
-        self.render()
+        self.update_selection()
 
     def toggle(self, item):
-        if not self.busy:
+        if not self.busy and not self.importing:
             self.active = item
             self.library.toggle(item)
-            self.render()
+            self.update_selection()
 
     def select_all(self):
-        if not self.busy:
+        if not self.busy and not self.importing:
             self.library.select_all()
-            self.render()
+            self.update_selection()
 
     def deselect_all(self):
-        if not self.busy:
+        if not self.busy and not self.importing:
             self.library.chosen.clear()
-            self.render()
+            self.update_selection()
 
     def move(self, delta):
-        if not self.busy:
+        if not self.busy and not self.importing:
             self.library.move(self.active, delta)
-            self.render()
+            self.update_selection()
 
     def remove(self):
-        if self.active and not self.busy:
+        if self.active and not self.busy and not self.importing:
             item = self.active
             self.library.remove(item)
             for grid in (True, False):
@@ -482,29 +676,26 @@ class App:
             self.render()
 
     def clear(self):
-        if self.busy:
+        if self.busy or self.importing:
             return
-        for _, future in self.pending + self.imports:
-            future.cancel()
-        self.pending.clear()
-        self.imports.clear()
         self.library = Library()
+        self.batch_items.clear()
         self.active = None
+        self.render()
         self.photos.clear()
+        self.scroll_positions = {"grid": 0, "list": 0}
+        self.canvas.yview_moveto(0)
         self.notice.set("Fresh workspace. Bring something good together.")
         self.debug.logger.debug("Workspace cleared")
-        self.render()
 
     def set_busy(self, busy):
         self.busy = busy
-        for control in self.controls:
-            if control.winfo_exists():
-                control.configure(state="disabled" if busy else "normal")
-        self.render()
+        self.sync_controls()
+        self.update_selection()
 
     def save(self):
         paths = self.library.merge_paths()
-        if self.busy or not paths:
+        if self.busy or self.importing or not paths:
             return
         target = filedialog.asksaveasfilename(title="Save your merged PDF", defaultextension=".pdf", initialfile="merged.pdf", filetypes=[("PDF files", "*.pdf")])
         if not target:
@@ -519,7 +710,7 @@ class App:
         for index, item in enumerate(self.library.chosen, 1):
             self.debug.logger.info("  %d. %s (%d pages)", index, item.name, item.pages)
         self.set_busy(True)
-        future = self.executor.submit(merge_pdfs, paths, target)
+        future = self.executor.submit(merge_pdfs, paths, target, [item.name for item in self.library.chosen])
         self.root.after(80, self.poll_merge, future, target)
 
     def poll_merge(self, future, target):
@@ -544,13 +735,15 @@ class App:
         if self.busy:
             messagebox.showinfo("Merge in progress", "Please wait for the merge to finish before closing.")
             return
+        if self.importing:
+            self.close_after_import = True
+            self.cancel_import()
+            return
         self.closed = True
         self.root.after_cancel(self.preview_job)
         self.root.after_cancel(self.collect_job)
         if self.resize_job:
             self.root.after_cancel(self.resize_job)
-        for _, future in self.pending + self.imports:
-            future.cancel()
         # Cleanup is queued after any active file read/extraction, including on Windows.
         self.cleanup_future = self.executor.submit(self.archives.close)
         self.executor.shutdown(wait=True)

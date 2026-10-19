@@ -6,6 +6,8 @@ A lightweight Python desktop app with rounded cards, Google-inspired colors, rea
 
 ![Light mode](docs/grid.png)
 
+Windows is the primary supported platform. Windows CI runs the full desktop, slide, loading, scrolling, and packaging checks before publishing a downloadable build.
+
 ## Run on Windows
 
 Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/windows/), with **Add Python to PATH** checked and **Tcl/Tk** included (the default). Close and reopen Command Prompt after installation.
@@ -25,6 +27,18 @@ After a push to `main`, the **Windows app** workflow tests the app and builds an
 
 The workflow must finish successfully before its download is available. The executable is unsigned; Windows may display a reputation warning.
 
+## Import progress and stable browsing
+
+After selecting files, a dedicated **Preparing your files** screen shows the current filename and stage, elapsed time, per-file results, and completion counts. Archives report extraction progress; presentations report slide conversion; PDFs report page checks and thumbnail rendering. The final stage caches the browser cards before revealing the library.
+
+**Merge stays disabled throughout preparation**, including when you already have files selected. A failed input is reported individually and cannot be picked; it does not stop other valid inputs. Once every input is prepared or classified as failed and the browser is cached, selection and merging unlock. **Open terminal** and the theme toggle remain available during loading.
+
+**Cancel remaining** stops queued work after the current file finishes safely. Completed files and the existing library are kept. The app does not pretend to know a time-based percentage for external slide conversion; it shows the active stage and real completed-file counts.
+
+Cards, thumbnails, and controls are reused when selecting, scrolling, changing themes, and switching Grid/List. Selection updates only the relevant states; it does not destroy the library or force an intermediate redraw. Each view retains its scroll position.
+
+![Import progress](docs/loading.png)
+
 ## PowerPoint slides + PDFs
 
 **PPTX import requires [LibreOffice](https://www.libreoffice.org/download/download-libreoffice/) (free) or installed Microsoft PowerPoint on Windows.** No extra Python packages are needed. Install one renderer, then restart Earl Gray. PDFs work without an office app.
@@ -41,7 +55,7 @@ LibreOffice is used when installed; otherwise Windows uses PowerPoint automation
 4. Click a card to focus it, then use the up/down arrows to move it earlier/later. You can also drag a picked card onto another picked card. The library stays in import order while the numbers show output order.
 5. Click **Merge & save**, choose a name and location in the native Save As dialog, and save. Existing destinations require overwrite confirmation. Source PDFs, presentations, and imported ZIPs cannot be overwritten.
 
-The circular theme button shows a **sun in Light mode** and a **full moon in Dark mode**. Click it to switch themes. The tea emoji is used in the sidebar, title bar/taskbar, and Windows executable. Your selection and merge order stay intact when switching themes or views.
+The circular theme button shows a **sun in Light mode** and a **full moon in Dark mode**. Click it to switch themes. The black-and-white tea logo is used in the sidebar, title bar/taskbar, and Windows executable, with a matching monochrome variant for dark mode. Your selection and merge order stay intact when switching themes or views.
 
 The red trash button removes the focused card; **Clear workspace** removes all cards. Locked, empty, and unreadable PDFs show an error and cannot be picked. Unlock password-protected PDFs and ZIPs with another tool before importing them.
 
@@ -50,6 +64,12 @@ The red trash button removes the focused card; **Clear workspace** removes all c
 ZIPs are unpacked in the background into app-owned temporary storage, leaving the original archive unchanged. Original PDF/PPTX names are displayed even when several subfolders contain the same filename. Imported documents remain available for the session; temporary storage is removed when the app closes. Re-adding the same archive does not duplicate its documents while they remain in the library. Nested ZIP archives are skipped.
 
 Each ZIP can contain up to 2,000 documents, with a maximum of 256 MB per document and 512 MB of extracted document data in total. Unsafe paths and document symlinks are rejected. Corrupt archives fail without changing your existing library.
+
+## Named sections in the merged PDF
+
+Every input becomes a section/bookmark named after its **original filename**, including `.pptx` names and original names from ZIPs. Each section opens at that document's first output page, in the numbered merge order. Existing PDF/slide bookmarks remain nested beneath the filename section.
+
+Open your PDF viewer's **Bookmarks**, **Outline**, or **Contents** panel to navigate these sections. The PDF requests that the outline panel open automatically; individual viewers may choose otherwise. Section bookmarks do not add separator pages or change the original page content.
 
 ## Open terminal / debugging
 
@@ -93,6 +113,6 @@ On Linux/macOS, create the environment with `python3 -m venv .venv` and use `.ve
 
 The tests include a real two-slide PPTX fixture and verify rendered slide text and mixed PDF/PPTX order. Install a slide renderer to run those integration checks; they explicitly report a skip when no renderer exists.
 
-The tests cover actual merges, preview rendering, numbered selection, themes, view switching, ZIP import, extraction limits, unsafe paths, cleanup, and saving through the desktop UI. Desktop tests require a display or Xvfb and explicitly report a skip when no display exists. The Windows workflow installs LibreOffice and runs the same suite before packaging, then checks that the packaged app opens and closes from outside the checkout before uploading the executable.
+The tests cover section names and page destinations, persistent card identities, scroll position across selection and view changes, merge gating during loading, cancellation, and actual merges, preview rendering, numbered selection, themes, view switching, ZIP import, extraction limits, unsafe paths, cleanup, and saving through the desktop UI. Desktop tests require a display or Xvfb and explicitly report a skip when no display exists. The Windows workflow installs LibreOffice and requires both desktop and slide integration tests to execute (they cannot silently skip in CI). It runs the same suite before packaging, then checks that the packaged app opens and closes from outside the checkout before uploading the executable.
 
 The tea artwork is Twemoji (CC BY 4.0); see [asset attribution](assets/NOTICE.md).

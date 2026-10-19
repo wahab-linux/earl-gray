@@ -3,4 +3,4 @@ The tea emoji artwork in tea.svg, tea.png, and earl-gray.ico is Twemoji's
 Source: https://github.com/jdecked/twemoji/blob/main/assets/svg/1f375.svg
 Licensed under Creative Commons Attribution 4.0 International:
 https://creativecommons.org/licenses/by/4.0/
-PNG and ICO versions are rasterized derivatives of the original SVG.
+The monochrome palettes, dark variant, PNG and ICO versions are derivatives of the original SVG.

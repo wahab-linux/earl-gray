@@ -20,7 +20,7 @@ def draw_icon(name, color, size):
     def ellipse(box, fill=None, outline=color, width=2):
         draw.ellipse(points(box), fill=fill, outline=outline, width=max(1, round(width * factor)))
     if name == "logo":
-        with Image.open(Path(__file__).resolve().parent / "assets" / "tea.png") as tea:
+        with Image.open(Path(__file__).resolve().parent / "assets" / ("tea-dark.png" if color == "dark" else "tea.png")) as tea:
             return tea.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
     elif name == "plus":
         line((12, 5, 12, 19)); line((5, 12, 19, 12))
@@ -66,6 +66,8 @@ def draw_icon(name, color, size):
 
 @lru_cache(maxsize=128)
 def icon(name, color="#ffffff", size=20):
+    if name == "logo":
+        return ctk.CTkImage(draw_icon(name, "light", size * 2), draw_icon(name, "dark", size * 2), size=(size, size))
     light, dark = color if isinstance(color, tuple) else (color, color)
     return ctk.CTkImage(draw_icon(name, light, size * 2), draw_icon(name, dark, size * 2), size=(size, size))
 

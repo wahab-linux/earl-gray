@@ -24,7 +24,9 @@ jobs:
         run: |
           choco install libreoffice-fresh --yes --no-progress --limit-output
           if ($LASTEXITCODE -eq 3010) { $global:LASTEXITCODE = 0 }
-      - name: Test merger, previews, selection order, and desktop UI
+      - name: Test Windows imports, progress, scrolling, and PDF sections
+        env:
+          EARLGRAY_REQUIRE_INTEGRATION_TESTS: "1"
         run: python -m unittest discover -s tests -v
       - name: Package Windows app
         run: python -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all pypdfium2 --collect-all customtkinter --hidden-import PIL._tkinter_finder --add-data assets:assets --icon assets/earl-gray.ico --name EarlGray app.py
