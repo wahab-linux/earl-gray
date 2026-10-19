@@ -51,11 +51,13 @@ LibreOffice is used when installed; otherwise Windows uses PowerPoint automation
 
 1. **Add files**, **Add ZIP**, or **Open folder**. Folder import includes PDFs and PPTXs directly inside the folder. ZIP import also finds both inside nested folders; other file types are skipped.
 2. Switch between **Grid** and **List**. Both show first-page thumbnails, filenames, page counts, and sizes. Imported ZIP files also show their archive and subfolder.
-3. Click **Pick** on each document you want. The checkmark and number show the exact merge order. Picking another document appends it; unpicking closes the gap. **Select all** appends all readable, loaded documents in library order.
-4. Click a card to focus it, then use the up/down arrows to move it earlier/later. You can also drag a picked card onto another picked card. The library stays in import order while the numbers show output order.
+3. Use **Sort by** to choose **Name**, **Size**, **Date modified**, or **Pages**, then choose **Ascending** or **Descending**. Name ascending is the default and compares numbers naturally: `2, 4, 5, 10`. Names from ZIPs and presentations use their original filenames. Size uses original file bytes; Pages uses PDF pages or presentation slides; Date modified uses the source timestamp (the member's stored date inside a ZIP). Equal metadata values sort by natural filename; unavailable metadata stays last in either direction.
+4. Click **Pick** on each document you want. The checkmark and number show the exact merge order. Picking another document appends it; unpicking closes the gap. **Select all** selects all readable, loaded documents and numbers them in the displayed order. Changing either sort dropdown also renumbers currently picked files to follow that sort. Click a card and use the up/down arrows, or drag a picked card onto another picked card, to arrange the merge manually afterward. Importing more files follows the current browser sort while preserving your existing merge queue.
 5. Click **Merge & save**, choose a name and location in the native Save As dialog, and save. Existing destinations require overwrite confirmation. Source PDFs, presentations, and imported ZIPs cannot be overwritten.
 
 The circular theme button shows a **sun in Light mode** and a **full moon in Dark mode**. Click it to switch themes. The black-and-white tea logo is used in the sidebar, title bar/taskbar, and Windows executable, with a matching monochrome variant for dark mode. Your selection and merge order stay intact when switching themes or views.
+
+The window starts at a more compact **1080 × 740** and can be resized down to **940 × 680**. Sorting repositions existing cards and keeps their cached thumbnails, just like switching between Grid and List.
 
 The red trash button removes the focused card; **Clear workspace** removes all cards. Locked, empty, and unreadable PDFs show an error and cannot be picked. Unlock password-protected PDFs and ZIPs with another tool before importing them.
 

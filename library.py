@@ -1,6 +1,8 @@
 """PDF inspection and selection order, independent of the desktop interface."""
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
+import unicodedata
 
 from PIL import Image
 import pypdfium2 as pdfium
@@ -16,6 +18,7 @@ class PdfItem:
     archive: Path | None = None
     size: int = 0
     pages: int = 0
+    modified_ns: int | None = None
     preview: Image.Image | None = None
     ready: bool = False
     error: str = ""
@@ -63,6 +66,13 @@ def format_size(size):
         size /= 1024
 
 
+def natural_name(name):
+    """Compare original filenames case-insensitively, with numeric runs as numbers."""
+    name = unicodedata.normalize("NFKC", name).strip().casefold()
+    return tuple((1, int(part)) if part.isdecimal() else (0, part)
+                 for part in re.split(r"([0-9]+)", name))
+
+
 @dataclass
 class Library:
     items: list[PdfItem] = field(default_factory=list)
@@ -87,9 +97,33 @@ class Library:
             self.chosen.append(item)
 
     def select_all(self):
-        for item in self.items:
-            if item.ready and not item.error and item not in self.chosen:
-                self.chosen.append(item)
+        self.chosen[:] = [item for item in self.items if item.ready and not item.error]
+
+    def sort(self, by="Name", descending=False, reorder_chosen=True):
+        """Sort cached source metadata; missing values stay last in either direction.
+
+        An explicit sort also renumbers picked files. Import can sort the browser
+        without disturbing an existing manually arranged merge queue.
+        """
+        attributes = {"Size": "size", "Date modified": "modified_ns", "Pages": "pages"}
+        if by != "Name" and by not in attributes:
+            raise ValueError(f"Unknown sort field: {by}")
+        ordered = sorted(self.items, key=lambda item: (natural_name(item.name),
+                         item.name.casefold(), str(item.path).casefold()))
+        if by == "Name":
+            if descending:
+                ordered.reverse()
+        else:
+            attribute = attributes[by]
+            known, unknown = [], []
+            for item in ordered:
+                value = getattr(item, attribute)
+                (known if value is not None and (by == "Date modified" or item.ready) else unknown).append(item)
+            ordered = sorted(known, key=lambda item: getattr(item, attribute), reverse=descending) + unknown
+        self.items[:] = ordered
+        if reorder_chosen:
+            chosen = set(self.chosen)
+            self.chosen[:] = [item for item in ordered if item in chosen]
 
     def move(self, item, delta):
         if item not in self.chosen:

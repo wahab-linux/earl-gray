@@ -44,6 +44,9 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(done["kind"], "done")
         self.assertEqual((done["completed"], done["total"], done["ready"]), (2, 2, 2))
         self.assertEqual(done["errors"], [])
+        sources = next(event["sources"] for event in events if event["kind"] == "discovered")
+        self.assertEqual(sources[0].modified_ns, self.pdf.stat().st_mtime_ns)
+        self.assertIsNotNone(sources[1].modified_ns)
 
     def test_failed_archive_does_not_hide_ready_files(self):
         broken = self.folder / "broken.zip"

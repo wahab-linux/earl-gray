@@ -1,4 +1,5 @@
 import stat
+from datetime import datetime
 import tempfile
 import unittest
 import zipfile
@@ -81,3 +82,11 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(self.store.extract(self.archive), [])
         self.store.close()
         self.assertFalse(self.store.root.exists())
+
+    def test_date_metadata_comes_from_zip_member_not_extraction_time(self):
+        date = (2020, 3, 4, 12, 30, 0)
+        with zipfile.ZipFile(self.archive, "w") as output:
+            output.writestr(zipfile.ZipInfo("old report.pdf", date_time=date), self.pdf.read_bytes())
+        imported = self.store.extract(self.archive)[0]
+        self.assertEqual(imported.modified_ns, int(datetime(*date).timestamp()) * 1_000_000_000)
+        self.assertNotEqual(imported.modified_ns, imported.path.stat().st_mtime_ns)

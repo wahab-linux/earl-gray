@@ -40,8 +40,10 @@ class DesktopTests(unittest.TestCase):
         cls.app.cleanup_future.result(timeout=10)
 
     def setUp(self):
-        self.root.geometry("1180x800")
+        self.root.geometry("1080x740")
         self.app.clear()
+        self.app.sort_menu.set("Name")
+        self.app.direction_menu.set("Ascending")
         self.app.change_view("Grid")
         if self.app.mode != "light":
             self.app.toggle_theme()
@@ -103,6 +105,81 @@ class DesktopTests(unittest.TestCase):
         checkbox.invoke()
         self.assertEqual(self.app.library.chosen, [])
 
+    def test_sort_dropdowns_reorder_persistent_cards_numbers_and_saved_sections(self):
+        self.app.clear()
+        sources = []
+        for number, pages in ((10, 3), (5, 2), (4, 1), (2, 4)):
+            path = self.folder / f"{number} report.pdf"
+            with PdfWriter() as writer:
+                for _ in range(pages):
+                    writer.add_blank_page(width=number * 100, height=400)
+                writer.write(path)
+            os.utime(path, ns=(number * 1_000_000_000, number * 1_000_000_000))
+            sources.append(path)
+        self.app.add(sources)
+        self.wait_for(lambda: not self.app.importing)
+        self.assertEqual([item.name for item in self.app.library.items],
+                         ["2 report.pdf", "4 report.pdf", "5 report.pdf", "10 report.pdf"])
+        cards = dict(self.app.cards)
+        self.app.toggle(self.app.library.items[-1])
+        self.app.select_all()  # Also orders previously picked files to match the browser.
+        self.assertEqual(self.app.library.chosen, self.app.library.items)
+        with patch.object(self.app, "card", side_effect=AssertionError("Sorting rebuilt a card")):
+            for field, attribute in (("Size", "size"), ("Date modified", "modified_ns"), ("Pages", "pages")):
+                self.app.sort_menu._dropdown_callback(field)
+                for direction in ("Descending", "Ascending"):
+                    self.app.direction_menu._dropdown_callback(direction)
+                    self.root.update()
+                    values = [getattr(item, attribute) for item in self.app.library.items]
+                    self.assertEqual(values, sorted(values, reverse=direction == "Descending"))
+                    self.assertEqual(self.app.library.chosen, self.app.library.items)
+                    self.assertEqual([card.merge_position for card in self.app.visible_cards], [1, 2, 3, 4])
+                    self.assertTrue(all(self.app.cards[item] is card for item, card in cards.items()))
+            self.app.sort_menu._dropdown_callback("Name")
+            self.app.direction_menu._dropdown_callback("Descending")
+            self.app.change_view("List")
+            self.root.update()
+            self.assertEqual([item.name for item in self.app.library.items],
+                             ["10 report.pdf", "5 report.pdf", "4 report.pdf", "2 report.pdf"])
+        output = self.folder / "sorted.pdf"
+        with patch("app.filedialog.asksaveasfilename", return_value=str(output)), patch("app.messagebox.showinfo"):
+            self.app.save()
+            self.wait_for(lambda: not self.app.busy)
+        reader = PdfReader(output)
+        self.assertEqual([int(page.mediabox.width) for page in reader.pages],
+                         [1000] * 3 + [500] * 2 + [400] + [200] * 4)
+        self.assertEqual([entry.title for entry in reader.outline],
+                         ["10 report.pdf", "5 report.pdf", "4 report.pdf", "2 report.pdf"])
+        # Subsequent imports honor the dropdowns but preserve a manual merge queue.
+        self.app.active = self.app.library.chosen[0]
+        self.app.move(1)
+        chosen = list(self.app.library.chosen)
+        extra = self.folder / "20 report.pdf"
+        extra.write_bytes(sources[0].read_bytes())
+        self.app.add([extra])
+        self.wait_for(lambda: not self.app.importing)
+        self.assertEqual(self.app.library.items[0].name, "20 report.pdf")
+        self.assertEqual(self.app.library.chosen, chosen)
+
+    def test_compact_window_keeps_controls_visible_in_both_views(self):
+        for dimensions in ("1080x740", "940x680"):
+            self.root.geometry(dimensions)
+            for view in ("Grid", "List"):
+                self.app.change_view(view)
+                self.root.update()
+                for widget in (*self.app.controls, self.app.theme_button, self.app.terminal_button):
+                    if self.app.empty_frame and widget.master is self.app.empty_frame:
+                        continue  # The empty-workspace action is intentionally hidden after import.
+                    with self.subTest(dimensions=dimensions, view=view, control=type(widget).__name__):
+                        self.assertTrue(widget.winfo_ismapped())
+                        self.assertGreaterEqual(widget.winfo_rootx(), self.root.winfo_rootx())
+                        self.assertGreaterEqual(widget.winfo_rooty(), self.root.winfo_rooty())
+                        self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(),
+                                             self.root.winfo_rootx() + self.root.winfo_width())
+                        self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(),
+                                             self.root.winfo_rooty() + self.root.winfo_height())
+                self.assertGreater(self.app.canvas.winfo_height(), 150)
+
     def test_drag_reorders_numbered_queue(self):
         from types import SimpleNamespace
         self.app.select_all()
@@ -148,14 +225,14 @@ class DesktopTests(unittest.TestCase):
         with patch("app.filedialog.askopenfilenames", return_value=[str(archive)]):
             self.app.add_zip()
         self.wait_for(lambda: not self.app.importing)
-        imported = self.app.library.items[3:]
-        self.assertEqual([item.name for item in imported], ["cover.PDF", "appendix.pdf"])
+        imported = [item for item in self.app.library.items if item.archive]
+        self.assertEqual([item.name for item in imported], ["appendix.pdf", "cover.PDF"])
         self.assertTrue(all(item.ready and item.preview for item in imported))
         self.assertTrue(all(item.archive == archive.resolve() for item in imported))
         self.app.add([archive])
         self.assertFalse(self.app.importing)
-        self.app.toggle(imported[1])
         self.app.toggle(imported[0])
+        self.app.toggle(imported[1])
         destination = self.folder / "zip-merged.pdf"
         with patch("app.filedialog.asksaveasfilename", return_value=str(destination)), patch("app.messagebox.showinfo"):
             self.app.save()
@@ -240,7 +317,7 @@ class DesktopTests(unittest.TestCase):
         source = self.folder / "additional.pdf"
         source.write_bytes((self.folder / "sample-0.pdf").read_bytes())
         self.app.select_all()
-        previous_cards = list(self.app.visible_cards)
+        previous_cards = dict(self.app.cards)
         original = self.app.converter.prepare
         def delayed(path, progress=None):
             if progress:
@@ -258,6 +335,8 @@ class DesktopTests(unittest.TestCase):
                 self.assertFalse(self.app.content._parent_frame.winfo_ismapped())
                 self.assertEqual(self.app.merge_button.cget("state"), "disabled")
                 self.assertEqual(self.app.terminal_button.cget("state"), "normal")
+                self.assertEqual(self.app.sort_menu.cget("state"), "disabled")
+                self.assertEqual(self.app.direction_menu.cget("state"), "disabled")
                 with patch("app.filedialog.asksaveasfilename") as save_dialog:
                     self.app.save()
                     save_dialog.assert_not_called()
@@ -270,7 +349,7 @@ class DesktopTests(unittest.TestCase):
             self.wait_for(lambda: not self.app.importing)
         self.assertFalse(self.app.loading.winfo_ismapped())
         self.assertEqual(self.app.merge_button.cget("state"), "normal")
-        self.assertEqual(self.app.visible_cards[:3], previous_cards)
+        self.assertTrue(all(self.app.cards[item] is card for item, card in previous_cards.items()))
         self.assertTrue(all(item.ready for item in self.app.library.items))
 
     def test_scrolling_selection_and_view_switches_preserve_card_widgets(self):
@@ -311,13 +390,13 @@ class DesktopTests(unittest.TestCase):
         self.app.add([invalid])
         self.wait_for(lambda: not self.app.importing)
         self.assertEqual(len(self.app.last_import_errors), 1)
-        failed = self.app.library.items[-1]
+        failed = next(item for item in self.app.library.items if item.path == invalid)
         self.assertTrue(failed.error)
         self.assertFalse(failed.ready)
         self.app.select_all()
         self.assertNotIn(failed, self.app.library.chosen)
         self.assertEqual(self.app.merge_button.cget("state"), "normal")
-        self.assertEqual(self.app.visible_cards[-1].selection_button.cget("state"), "disabled")
+        self.assertEqual(self.app.cards[failed].selection_button.cget("state"), "disabled")
 
     def test_cancel_remaining_keeps_existing_and_completed_files(self):
         from threading import Event

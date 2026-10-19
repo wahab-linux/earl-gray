@@ -12,7 +12,7 @@ import customtkinter as ctk
 from PIL import Image, ImageTk
 
 from archives import ArchiveStore
-from library import Library, format_size
+from library import Library, format_size, natural_name
 from conversion import SlideConverter
 from diagnostics import DebugLog
 from importing import prepare_batch
@@ -66,12 +66,14 @@ class App:
         self.columns = 0
         self.mode = "light"
         self.view = tk.StringVar(master=root, value="grid")
+        self.sort_by = tk.StringVar(master=root, value="Name")
+        self.sort_direction = tk.StringVar(master=root, value="Ascending")
         self.status = tk.StringVar(master=root)
         self.notice = tk.StringVar(master=root, value="Your files stay on your device. Always.")
         ctk.set_appearance_mode("light")
         root.title("Earl Gray | A little order, one perfect PDF")
-        root.geometry("1180x800")
-        root.minsize(940, 660)
+        root.geometry("1080x740")
+        root.minsize(940, 680)
         root.configure(fg_color=BG)
         self.set_window_icon()
         available = {name.casefold(): name for name in font.families(root)}
@@ -138,21 +140,21 @@ class App:
         side.grid_columnconfigure(0, weight=1)
         side.grid_rowconfigure(8, weight=1)
         brand = ctk.CTkFrame(side, fg_color="transparent")
-        brand.grid(row=0, column=0, sticky="ew", padx=22, pady=(30, 28))
+        brand.grid(row=0, column=0, sticky="ew", padx=22, pady=(22, 18))
         self.text(brand, "", image=icon("logo", size=30)).pack(side="left")
         self.text(brand, "earl gray", 23, True).pack(side="left", padx=10)
-        self.text(side, "A LITTLE LESS SCATTERED.", 10, True, MUTED).grid(row=1, column=0, sticky="w", padx=24, pady=(0, 28))
+        self.text(side, "A LITTLE LESS SCATTERED.", 10, True, MUTED).grid(row=1, column=0, sticky="w", padx=24, pady=(0, 18))
         self.button(side, "Add files", self.add_files, BLUE, icon("plus"), width=168,
                     text_color="white", hover_color="#185ABC").grid(row=2, column=0, padx=20, pady=5, sticky="ew")
         self.button(side, "Add ZIP", self.add_zip, YELLOW, icon("zip", "#33280B"), width=168,
                     text_color="#33280B", hover_color="#F4B400").grid(row=3, column=0, padx=20, pady=5, sticky="ew")
         self.button(side, "Open folder", self.add_folder, SOFT, icon("folder", MUTED), width=168).grid(row=4, column=0, padx=20, pady=5, sticky="ew")
         guide = ctk.CTkFrame(side, fg_color=BG, corner_radius=18)
-        guide.grid(row=5, column=0, padx=20, pady=28, sticky="ew")
-        self.text(guide, "THREE LITTLE STEPS", 10, True, MUTED).pack(anchor="w", padx=16, pady=(18, 12))
+        guide.grid(row=5, column=0, padx=20, pady=18, sticky="ew")
+        self.text(guide, "THREE LITTLE STEPS", 10, True, MUTED).pack(anchor="w", padx=16, pady=(12, 8))
         for number, label, color in (("1", "Bring your files", BLUE), ("2", "Pick the order", RED), ("3", "Save one file", GREEN)):
             row = ctk.CTkFrame(guide, fg_color="transparent")
-            row.pack(fill="x", padx=14, pady=(0, 14))
+            row.pack(fill="x", padx=14, pady=(0, 10))
             self.text(row, number, 11, True, "white", fg_color=color, corner_radius=12, width=24, height=24).pack(side="left")
             self.text(row, label, 12, color=INK).pack(side="left", padx=8)
         privacy = ctk.CTkFrame(side, fg_color="transparent")
@@ -168,15 +170,15 @@ class App:
 
     def build_workspace(self):
         main = ctk.CTkFrame(self.root, fg_color="transparent", corner_radius=0)
-        main.grid(row=0, column=1, sticky="nsew", padx=28, pady=(26, 16))
+        main.grid(row=0, column=1, sticky="nsew", padx=24, pady=(20, 12))
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(3, weight=1)
         header = ctk.CTkFrame(main, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew")
         heading = ctk.CTkFrame(header, fg_color="transparent")
         heading.pack(side="left")
-        self.text(heading, "Your PDFs, together.", 30, True).pack(anchor="w")
-        self.text(heading, "A little order. One perfect PDF.", 13, color=MUTED).pack(anchor="w", pady=(3, 0))
+        self.text(heading, "Your PDFs, together.", 28, True).pack(anchor="w")
+        self.text(heading, "A little order. One perfect PDF.", 13, color=MUTED, height=20).pack(anchor="w", pady=(3, 0))
         self.theme_button = CircleButton(header, text="", image=icon("sun", "#E6A700", 22), width=44, height=44,
                                         corner_radius=22, fg_color=SURFACE, hover_color=SOFT, border_width=1,
                                         border_color=BORDER, command=self.toggle_theme)
@@ -184,18 +186,20 @@ class App:
         self.mode_label = self.text(header, "Light mode", 12, color=MUTED)
         self.mode_label.pack(side="right")
         banner = ctk.CTkFrame(main, fg_color=("#E8F0FE", "#1B2D49"), corner_radius=20)
-        banner.grid(row=1, column=0, sticky="ew", pady=(22, 20))
-        self.text(banner, "", image=icon("merge", BLUE_TEXT, 30), width=58).pack(side="left", padx=(12, 0), pady=16)
+        banner.grid(row=1, column=0, sticky="ew", pady=(14, 12))
+        self.text(banner, "", image=icon("merge", BLUE_TEXT, 30), width=58).pack(side="left", padx=(12, 0), pady=10)
         words = ctk.CTkFrame(banner, fg_color="transparent")
-        words.pack(side="left", fill="x", expand=True, padx=4, pady=14)
-        self.text(words, "Good things come together.", 16, True, BLUE_TEXT).pack(anchor="w")
-        self.text(words, "PDFs, slides, or ZIPs in. One beautifully ordered PDF out.", 12, color=MUTED).pack(anchor="w", pady=(2, 0))
+        words.pack(side="left", fill="x", expand=True, padx=4, pady=10)
+        self.text(words, "Good things come together.", 16, True, BLUE_TEXT, height=22).pack(anchor="w")
+        self.text(words, "PDFs, slides, or ZIPs in. One beautifully ordered PDF out.", 12, color=MUTED, height=18).pack(anchor="w", pady=(2, 0))
         self.text(banner, "", image=icon("logo", size=24)).pack(side="right", padx=22)
         toolbar = ctk.CTkFrame(main, fg_color="transparent")
-        toolbar.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        self.count_label = self.text(toolbar, "Your library", 17, True)
+        toolbar.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        library_bar = ctk.CTkFrame(toolbar, fg_color="transparent")
+        library_bar.pack(fill="x")
+        self.count_label = self.text(library_bar, "Your library", 17, True)
         self.count_label.pack(side="left")
-        self.layout_switch = ctk.CTkSegmentedButton(toolbar, values=["Grid", "List"], command=self.change_view,
+        self.layout_switch = ctk.CTkSegmentedButton(library_bar, values=["Grid", "List"], command=self.change_view,
                          width=146, height=34, corner_radius=12, fg_color=SOFT, selected_color=SURFACE,
                          selected_hover_color=SURFACE, unselected_color=SOFT, unselected_hover_color=BORDER,
                          text_color=INK, font=(self.font, 12, "bold"), dynamic_resizing=False)
@@ -203,24 +207,40 @@ class App:
         self.layout_switch.pack(side="right")
         self.controls.append(self.layout_switch)
         for label, command in (("None", self.deselect_all), ("Select all", self.select_all)):
-            control = ctk.CTkButton(toolbar, text=label, width=70, height=32, corner_radius=10, fg_color="transparent",
+            control = ctk.CTkButton(library_bar, text=label, width=70, height=32, corner_radius=10, fg_color="transparent",
                                     hover_color=SOFT, text_color=BLUE_TEXT, font=(self.font, 12), command=command)
             control.pack(side="right", padx=5)
             self.controls.append(control)
+        sorting = ctk.CTkFrame(toolbar, fg_color="transparent")
+        sorting.pack(fill="x", pady=(8, 0))
+        self.text(sorting, "Sort by", 12, color=MUTED).pack(side="left", padx=(0, 10))
+        self.sort_menu = ctk.CTkOptionMenu(sorting, values=["Name", "Size", "Date modified", "Pages"],
+                         variable=self.sort_by, command=self.apply_sort, width=154, height=32,
+                         corner_radius=10, fg_color=SURFACE, button_color=SOFT, button_hover_color=BORDER,
+                         text_color=INK, dropdown_fg_color=SURFACE, dropdown_text_color=INK,
+                         dropdown_hover_color=SOFT, font=(self.font, 12), dropdown_font=(self.font, 12))
+        self.sort_menu.pack(side="left", padx=(0, 8))
+        self.direction_menu = ctk.CTkOptionMenu(sorting, values=["Ascending", "Descending"],
+                         variable=self.sort_direction, command=self.apply_sort, width=146, height=32,
+                         corner_radius=10, fg_color=SURFACE, button_color=SOFT, button_hover_color=BORDER,
+                         text_color=INK, dropdown_fg_color=SURFACE, dropdown_text_color=INK,
+                         dropdown_hover_color=SOFT, font=(self.font, 12), dropdown_font=(self.font, 12))
+        self.direction_menu.pack(side="left")
+        self.controls.extend((self.sort_menu, self.direction_menu))
         self.content = ctk.CTkScrollableFrame(main, fg_color=BG, corner_radius=0, scrollbar_button_color=BORDER,
                                              scrollbar_button_hover_color=MUTED)
         self.content.grid(row=3, column=0, sticky="nsew", padx=0)
         self.canvas = self.content._parent_canvas
         self.canvas.bind("<Configure>", self.resize, add="+")
-        self.text(main, "Tick to pick. Numbers show merge order. Drag checked cards to rearrange.", 11, color=MUTED).grid(row=4, column=0, sticky="w", pady=(10, 12))
+        self.text(main, "Numbers show merge order. Sort or drag checked cards to rearrange.", 11, color=MUTED, height=18).grid(row=4, column=0, sticky="w", pady=(8, 10))
         footer = ctk.CTkFrame(main, fg_color=SURFACE, corner_radius=20, border_width=1, border_color=BORDER)
         footer.grid(row=5, column=0, sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
         info = ctk.CTkFrame(footer, fg_color="transparent")
-        info.grid(row=0, column=0, sticky="w", padx=18, pady=14)
-        self.selection_label = self.text(info, "Ready when you are", 14, True)
+        info.grid(row=0, column=0, sticky="w", padx=18, pady=10)
+        self.selection_label = self.text(info, "Ready when you are", 14, True, height=20)
         self.selection_label.pack(anchor="w")
-        self.text(info, textvariable=self.status, size=11, color=MUTED).pack(anchor="w", pady=(3, 0))
+        self.text(info, textvariable=self.status, size=11, color=MUTED, height=18).pack(anchor="w", pady=(3, 0))
         actions = ctk.CTkFrame(footer, fg_color="transparent")
         actions.grid(row=0, column=1, padx=(0, 12), pady=12)
         self.button(actions, "", lambda: self.move(-1), image=icon("up", MUTED), width=38).pack(side="left", padx=3)
@@ -230,7 +250,7 @@ class App:
         self.merge_button = self.button(actions, "Merge & save", self.save, GREEN, icon("arrow"), width=156,
                                        text_color="white", hover_color="#137333")
         self.merge_button.pack(side="left")
-        self.notice_label = self.text(main, textvariable=self.notice, size=11, color=MUTED, anchor="w", wraplength=780)
+        self.notice_label = self.text(main, textvariable=self.notice, size=11, color=MUTED, anchor="w", height=18, wraplength=680)
         self.notice_label.grid(row=6, column=0, sticky="ew", pady=(10, 0))
         self.progress = ctk.CTkProgressBar(main, height=3, corner_radius=2, mode="indeterminate", progress_color=BLUE,
                                           fg_color=SOFT)
@@ -266,7 +286,7 @@ class App:
         if folder:
             self.debug.logger.info("Opening folder: %s", folder)
             try:
-                self.add(sorted((p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in (".pdf", ".pptx")), key=lambda p: p.name.casefold()))
+                self.add(sorted((p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in (".pdf", ".pptx")), key=lambda p: natural_name(p.name)))
             except OSError as error:
                 self.debug.logger.exception("Could not read folder: %s", folder)
                 messagebox.showerror("Cannot open folder", str(error))
@@ -337,6 +357,7 @@ class App:
             for item in self.library.add(sources):
                 source = sources[item.path]
                 item.display_name, item.origin, item.archive = source.name, source.origin, source.archive
+                item.modified_ns = source.modified_ns
                 self.batch_items[item.path] = item
                 self.loading.row(item.path, item.name, "Queued")
             self.loading.bar.set(0)
@@ -365,6 +386,7 @@ class App:
                 if not item.ready and not item.error:
                     self.library.remove(item)
             self.import_result = event
+            self.library.sort(self.sort_by.get(), self.sort_direction.get() == "Descending", reorder_chosen=False)
             self.assembly_items = [item for item in self.library.items if item not in self.cards]
             self.assembly_total = len(self.assembly_items)
             self.loading.stage.configure(text="Preparing your file browser")
@@ -655,6 +677,17 @@ class App:
         if not self.busy and not self.importing:
             self.library.select_all()
             self.update_selection()
+
+    def apply_sort(self, _value=None):
+        if self.busy or self.importing:
+            return
+        self.library.sort(self.sort_by.get(), self.sort_direction.get() == "Descending")
+        self.scroll_positions = {"grid": 0, "list": 0}
+        self.canvas.yview_moveto(0)
+        self.render()
+        self.notice.set(f"Sorted by {self.sort_by.get().lower()}, {self.sort_direction.get().lower()}. "
+                        "Picked files now follow this merge order.")
+        self.debug.logger.info("Sorted library and merge queue: %s, %s", self.sort_by.get(), self.sort_direction.get())
 
     def deselect_all(self):
         if not self.busy and not self.importing:

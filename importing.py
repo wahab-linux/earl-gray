@@ -10,6 +10,7 @@ class Source:
     name: str
     origin: str = ""
     archive: Path | None = None
+    modified_ns: int | None = None
 
 
 def prepare_batch(paths, archives, converter, events, cancel):
@@ -33,7 +34,7 @@ def prepare_batch(paths, archives, converter, events, cancel):
                 try:
                     extraction("Checking archive", "Finding PDF and PowerPoint files")
                     imported = archives.extract(path, progress=extraction)
-                    sources.extend(Source(entry.path, entry.name, entry.source, entry.archive) for entry in imported)
+                    sources.extend(Source(entry.path, entry.name, entry.source, entry.archive, entry.modified_ns) for entry in imported)
                     emit("archive_done", path=path, name=path.name, detail=f"Found {len(imported)} document(s)")
                 except InterruptedError:
                     break
@@ -42,7 +43,11 @@ def prepare_batch(paths, archives, converter, events, cancel):
                     converter.logger.exception("ZIP import failed: %s", path)
                     emit("archive_error", path=path, name=path.name, detail=str(error))
             else:
-                sources.append(Source(path, path.name))
+                try:
+                    modified_ns = path.stat().st_mtime_ns
+                except OSError:
+                    modified_ns = None
+                sources.append(Source(path, path.name, modified_ns=modified_ns))
         emit("discovered", sources=sources)
         for index, source in enumerate(sources):
             if cancel.is_set():

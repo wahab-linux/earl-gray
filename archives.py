@@ -1,5 +1,6 @@
 """Bounded ZIP import into app-owned temporary storage."""
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
@@ -17,6 +18,7 @@ class ImportedDocument:
     name: str
     source: str
     archive: Path
+    modified_ns: int | None = None
 
 
 class ArchiveStore:
@@ -68,7 +70,11 @@ class ArchiveStore:
                             if progress:
                                 progress("Extracting archive", f"{relative.name}: {written:,} bytes extracted", actual_total / total if total else 0)
                     parent = "" if str(relative.parent) == "." else f" / {relative.parent}"
-                    imported.append(ImportedDocument(destination, relative.name, f"{archive.name}{parent}", archive))
+                    try:
+                        modified_ns = int(datetime(*entry.date_time).timestamp()) * 1_000_000_000
+                    except (ValueError, OverflowError, OSError):
+                        modified_ns = None
+                    imported.append(ImportedDocument(destination, relative.name, f"{archive.name}{parent}", archive, modified_ns))
             return imported
         except Exception:
             shutil.rmtree(folder, ignore_errors=True)
