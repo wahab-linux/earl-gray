@@ -1,6 +1,7 @@
 """Small vector icons drawn at high resolution, without external assets."""
 from functools import lru_cache
 import math
+from pathlib import Path
 from PIL import Image, ImageDraw
 import customtkinter as ctk
 
@@ -19,8 +20,8 @@ def draw_icon(name, color, size):
     def ellipse(box, fill=None, outline=color, width=2):
         draw.ellipse(points(box), fill=fill, outline=outline, width=max(1, round(width * factor)))
     if name == "logo":
-        for box, fill in zip(((2, 2, 10, 10), (14, 2, 22, 10), (2, 14, 10, 22), (14, 14, 22, 22)), GOOGLE):
-            draw.rounded_rectangle(points(box), radius=3 * factor, fill=fill)
+        with Image.open(Path(__file__).resolve().parent / "assets" / "tea.png") as tea:
+            return tea.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
     elif name == "plus":
         line((12, 5, 12, 19)); line((5, 12, 19, 12))
     elif name == "check":
@@ -28,10 +29,9 @@ def draw_icon(name, color, size):
     elif name == "circle":
         ellipse((4, 4, 20, 20), width=1.5)
     elif name == "moon":
-        # A crescent built as one polygon, with no assumed background color.
-        outer = [(12 + 9 * math.cos(t), 12 + 9 * math.sin(t)) for t in [math.radians(a) for a in range(75, 286, 5)]]
-        inner = [(16 + 8 * math.cos(t), 10 + 8 * math.sin(t)) for t in [math.radians(a) for a in range(265, 94, -5)]]
-        draw.polygon([(x * factor, y * factor) for x, y in outer + inner], fill=color)
+        ellipse((2, 2, 22, 22), fill="#F4E8B8", outline="#D9C98C", width=0.6)
+        for box in ((6, 5, 11, 10), (13, 13, 19, 19), (5, 13, 8, 16), (14, 5, 17, 8)):
+            ellipse(box, fill="#D9CE9F", outline="#D9CE9F", width=0.3)
     elif name == "sun":
         ellipse((8, 8, 16, 16), fill=color)
         for angle in range(0, 360, 45):
@@ -55,6 +55,9 @@ def draw_icon(name, color, size):
         line((12, 24 - y, 12, y)); line((6, 12, 12, y, 18, 12))
     elif name == "trash":
         line((4, 6, 20, 6)); line((8, 6, 8, 3, 16, 3, 16, 6)); line((6, 6, 7, 21, 17, 21, 18, 6)); line((10, 10, 10, 17), width=1.5); line((14, 10, 14, 17), width=1.5)
+    elif name == "terminal":
+        draw.rounded_rectangle(points((2, 4, 22, 20)), radius=3 * factor, outline=color, width=max(1, round(1.7 * factor)))
+        line((6, 9, 9, 12, 6, 15), width=1.5); line((12, 15, 17, 15), width=1.5)
     elif name == "shield":
         line((12, 3, 20, 6, 19, 15, 12, 21, 5, 15, 4, 6, 12, 3), width=1.6)
         line((8, 12, 11, 15, 16, 9), width=1.6)

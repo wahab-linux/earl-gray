@@ -10,6 +10,7 @@ from pypdf import PdfReader
 @dataclass(eq=False)
 class PdfItem:
     path: Path
+    pdf_path: Path | None = None
     display_name: str = ""
     origin: str = ""
     archive: Path | None = None
@@ -68,7 +69,7 @@ class Library:
         added = []
         for path in paths:
             path = Path(path).resolve()
-            if path.suffix.lower() == ".pdf" and path not in existing:
+            if path.suffix.lower() in (".pdf", ".pptx") and path not in existing:
                 item = PdfItem(path)
                 self.items.append(item)
                 added.append(item)
@@ -108,4 +109,4 @@ class Library:
             self.items.remove(item)
 
     def merge_paths(self):
-        return [item.path for item in self.chosen]
+        return [item.pdf_path or item.path for item in self.chosen]

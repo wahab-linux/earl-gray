@@ -47,7 +47,7 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(all(item.ready for item in self.app.library.items))
 
     def wait_for(self, condition):
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 60
         while not condition() and time.monotonic() < deadline:
             self.root.update()
             time.sleep(0.01)
@@ -173,3 +173,49 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(all(item.ready for item in self.app.library.items))
         self.app.select_all()
         self.assertEqual(self.app.library.merge_paths(), sources)
+
+    def test_open_terminal_button_calls_live_console(self):
+        with patch.object(self.app.debug, "open_terminal") as launch:
+            self.app.terminal_button.invoke()
+            launch.assert_called_once()
+        self.app.set_busy(True)
+        self.assertEqual(self.app.terminal_button.cget("state"), "normal")
+        self.app.set_busy(False)
+
+    def test_pptx_from_zip_merges_with_pdf(self):
+        from conversion import find_libreoffice, powerpoint_available
+        if not (find_libreoffice() or powerpoint_available()):
+            self.skipTest("Install LibreOffice or PowerPoint for slide integration tests")
+        archive = self.folder / "slides.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.write(Path(__file__).parent / "fixtures" / "two-slides.pptx", "Decks/workshop.PPTX")
+        self.app.add([archive])
+        self.wait_for(lambda: not self.app.imports and not self.app.pending)
+        deck = self.app.library.items[-1]
+        self.assertTrue(deck.ready, deck.error)
+        self.assertEqual(deck.name, "workshop.PPTX")
+        self.assertEqual(deck.pages, 2)
+        self.assertTrue(deck.pdf_path.exists())
+        self.app.toggle(deck)
+        self.app.toggle(self.app.library.items[0])
+        destination = self.folder / "mixed.pdf"
+        with patch("app.filedialog.asksaveasfilename", return_value=str(destination)), patch("app.messagebox.showinfo"):
+            self.app.save()
+            self.wait_for(lambda: not self.app.busy)
+        pages = PdfReader(destination).pages
+        self.assertEqual(len(pages), 3)
+        self.assertIn("Slide Alpha", pages[0].extract_text())
+        self.assertIn("Slide Beta", pages[1].extract_text())
+        self.assertEqual(float(pages[2].mediabox.width), 100)
+
+    def test_save_cannot_overwrite_original_presentation(self):
+        source = self.folder / "original.pptx"
+        source.write_bytes((Path(__file__).parent / "fixtures" / "two-slides.pptx").read_bytes())
+        original = source.read_bytes()
+        self.app.library.add([source])  # Protect sources even before their conversion is ready.
+        self.app.toggle(self.app.library.items[0])
+        with patch("app.filedialog.asksaveasfilename", return_value=str(source)), patch("app.messagebox.showerror") as warning:
+            self.app.save()
+            warning.assert_called_once()
+        self.assertFalse(self.app.busy)
+        self.assertEqual(source.read_bytes(), original)

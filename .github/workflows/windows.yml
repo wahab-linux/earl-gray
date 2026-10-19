@@ -19,10 +19,15 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller==6.16.0
+      - name: Install LibreOffice for real slide conversion tests
+        shell: pwsh
+        run: |
+          choco install libreoffice-fresh --yes --no-progress --limit-output
+          if ($LASTEXITCODE -eq 3010) { $global:LASTEXITCODE = 0 }
       - name: Test merger, previews, selection order, and desktop UI
         run: python -m unittest discover -s tests -v
       - name: Package Windows app
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all pypdfium2 --collect-all customtkinter --hidden-import PIL._tkinter_finder --name EarlGray app.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all pypdfium2 --collect-all customtkinter --hidden-import PIL._tkinter_finder --add-data assets:assets --icon assets/earl-gray.ico --name EarlGray app.py
       - name: Verify the packaged app opens and closes
         run: python scripts/check_windows_build.py dist/EarlGray.exe
       - uses: actions/upload-artifact@v4

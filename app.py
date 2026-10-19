@@ -6,10 +6,12 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, font
 
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageTk
 
 from archives import ArchiveStore
-from library import Library, format_size, inspect_pdf
+from library import Library, format_size
+from conversion import SlideConverter
+from diagnostics import DebugLog
 from pdf_merge import merge_pdfs
 from ui import icon, empty_art, CircleButton, detach_images
 
@@ -27,12 +29,15 @@ BLUE_TEXT = ("#1967D2", "#8AB4F8")
 
 
 class App:
-    def __init__(self, root):
+    def __init__(self, root, debug_log=None):
         self.root = root
+        self.debug = debug_log or DebugLog()
+        self.root.report_callback_exception = self.callback_error
         icon.cache_clear()  # CTk image caches belong to this Tk interpreter.
         self.gc_was_enabled = gc.isenabled()
         self.library = Library()
         self.archives = ArchiveStore()
+        self.converter = SlideConverter(self.archives.root / "slides", self.debug.logger)
         # Both ZIP import and PDFium rendering run on this one worker.
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.pending = []
@@ -53,6 +58,7 @@ class App:
         root.geometry("1180x800")
         root.minsize(940, 660)
         root.configure(fg_color=BG)
+        self.set_window_icon()
         available = {name.casefold(): name for name in font.families(root)}
         self.font = next((available[name.casefold()] for name in ("Segoe UI", "SF Pro Text", "DejaVu Sans", "Helvetica") if name.casefold() in available), "Helvetica")
         self.controls = []
@@ -66,6 +72,31 @@ class App:
         gc.disable()
         self.preview_job = root.after(80, self.poll_previews)
         self.collect_job = root.after(1000, self.collect_images)
+
+    def set_window_icon(self):
+        import sys
+        assets = Path(__file__).resolve().parent / "assets"
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WahabLinux.EarlGray")
+            self.root.iconbitmap(str(assets / "earl-gray.ico"))
+        else:
+            with Image.open(assets / "tea.png") as image:
+                self.window_icon = ImageTk.PhotoImage(image.copy(), master=self.root)
+            self.root.iconphoto(True, self.window_icon)
+        self.debug.logger.info("Tea app icon loaded.")
+
+    def callback_error(self, exception, value, traceback):
+        self.debug.logger.error("Unhandled UI error", exc_info=(exception, value, traceback))
+        messagebox.showerror("Something went wrong", f"{value}\n\nOpen terminal for details.\nLog: {self.debug.path}")
+
+    def open_terminal(self):
+        try:
+            self.debug.open_terminal()
+            self.notice.set("Debug terminal opened. It shows the live session log.")
+        except (OSError, RuntimeError) as error:
+            self.debug.logger.exception("Could not open debug terminal")
+            messagebox.showerror("Could not open terminal", f"{error}\n\nLog file: {self.debug.path}")
 
     def collect_images(self):
         gc.collect()
@@ -95,7 +126,7 @@ class App:
         self.text(brand, "", image=icon("logo", size=30)).pack(side="left")
         self.text(brand, "earl gray", 23, True).pack(side="left", padx=10)
         self.text(side, "A LITTLE LESS SCATTERED.", 10, True, MUTED).grid(row=1, column=0, sticky="w", padx=24, pady=(0, 28))
-        self.button(side, "Add PDFs", self.add_files, BLUE, icon("plus"), width=168,
+        self.button(side, "Add files", self.add_files, BLUE, icon("plus"), width=168,
                     text_color="white", hover_color="#185ABC").grid(row=2, column=0, padx=20, pady=5, sticky="ew")
         self.button(side, "Add ZIP", self.add_zip, YELLOW, icon("zip", "#33280B"), width=168,
                     text_color="#33280B", hover_color="#F4B400").grid(row=3, column=0, padx=20, pady=5, sticky="ew")
@@ -103,7 +134,7 @@ class App:
         guide = ctk.CTkFrame(side, fg_color=BG, corner_radius=18)
         guide.grid(row=5, column=0, padx=20, pady=28, sticky="ew")
         self.text(guide, "THREE LITTLE STEPS", 10, True, MUTED).pack(anchor="w", padx=16, pady=(18, 12))
-        for number, label, color in (("1", "Bring your PDFs", BLUE), ("2", "Pick the order", RED), ("3", "Save one file", GREEN)):
+        for number, label, color in (("1", "Bring your files", BLUE), ("2", "Pick the order", RED), ("3", "Save one file", GREEN)):
             row = ctk.CTkFrame(guide, fg_color="transparent")
             row.pack(fill="x", padx=14, pady=(0, 14))
             self.text(row, number, 11, True, "white", fg_color=color, corner_radius=12, width=24, height=24).pack(side="left")
@@ -113,6 +144,9 @@ class App:
         self.text(privacy, "", image=icon("shield", ("#188038", "#81C995"), 22)).pack(anchor="w")
         self.text(privacy, "Private by default", 12, True).pack(anchor="w", pady=(6, 0))
         self.text(privacy, "No uploads. No accounts.\nJust you and your pages.", 11, color=MUTED, justify="left").pack(anchor="w", pady=4)
+        self.terminal_button = self.button(side, "Open terminal", self.open_terminal, SOFT, icon("terminal", MUTED), width=168)
+        self.terminal_button.grid(row=7, column=0, padx=20, pady=5, sticky="ew")
+        self.controls.remove(self.terminal_button)  # Diagnostics remains available during a merge.
         self.button(side, "Clear workspace", self.clear, ("#FCE8E6", "#39262B"), icon("trash", ("#B3261E", "#F28B82")), width=168,
                     text_color=("#B3261E", "#F28B82"), hover_color=("#F9D5D1", "#503037")).grid(row=10, column=0, padx=20, pady=(0, 24), sticky="ew")
 
@@ -127,7 +161,7 @@ class App:
         heading.pack(side="left")
         self.text(heading, "Your PDFs, together.", 30, True).pack(anchor="w")
         self.text(heading, "A little order. One perfect PDF.", 13, color=MUTED).pack(anchor="w", pady=(3, 0))
-        self.theme_button = CircleButton(header, text="", image=icon("moon", BLUE_TEXT, 22), width=44, height=44,
+        self.theme_button = CircleButton(header, text="", image=icon("sun", "#E6A700", 22), width=44, height=44,
                                         corner_radius=22, fg_color=SURFACE, hover_color=SOFT, border_width=1,
                                         border_color=BORDER, command=self.toggle_theme)
         self.theme_button.pack(side="right", padx=(12, 0))
@@ -139,7 +173,7 @@ class App:
         words = ctk.CTkFrame(banner, fg_color="transparent")
         words.pack(side="left", fill="x", expand=True, padx=4, pady=14)
         self.text(words, "Good things come together.", 16, True, BLUE_TEXT).pack(anchor="w")
-        self.text(words, "PDFs or ZIPs in. A beautifully ordered PDF out.", 12, color=MUTED).pack(anchor="w", pady=(2, 0))
+        self.text(words, "PDFs, slides, or ZIPs in. One beautifully ordered PDF out.", 12, color=MUTED).pack(anchor="w", pady=(2, 0))
         self.text(banner, "", image=icon("logo", size=24)).pack(side="right", padx=22)
         toolbar = ctk.CTkFrame(main, fg_color="transparent")
         toolbar.grid(row=2, column=0, sticky="ew", pady=(0, 12))
@@ -190,8 +224,9 @@ class App:
     def toggle_theme(self):
         self.mode = "dark" if self.mode == "light" else "light"
         ctk.set_appearance_mode(self.mode)
-        self.theme_button.configure(image=icon("sun", "#FBBC05", 22) if self.mode == "dark" else icon("moon", BLUE_TEXT, 22))
+        self.theme_button.configure(image=icon("moon", size=22) if self.mode == "dark" else icon("sun", "#E6A700", 22))
         self.mode_label.configure(text=f"{self.mode.title()} mode")
+        self.debug.logger.debug("Theme changed to %s", self.mode)
         self.render()
 
     def change_view(self, value):
@@ -199,34 +234,38 @@ class App:
         self.render()
 
     def add_files(self):
-        self.add(filedialog.askopenfilenames(title="Add PDFs or ZIP archives", filetypes=[("PDFs and ZIPs", "*.pdf *.zip"), ("PDF files", "*.pdf"), ("ZIP archives", "*.zip")]))
+        self.add(filedialog.askopenfilenames(title="Add PDFs, PowerPoint slides, or ZIP archives", filetypes=[("Supported files", "*.pdf *.pptx *.zip"), ("PDF files", "*.pdf"), ("PowerPoint slides", "*.pptx"), ("ZIP archives", "*.zip")]))
 
     def add_zip(self):
         self.add(filedialog.askopenfilenames(title="Add ZIP archives", filetypes=[("ZIP archives", "*.zip")]))
 
     def add_folder(self):
-        folder = filedialog.askdirectory(title="Open a folder containing PDFs")
+        folder = filedialog.askdirectory(title="Open a folder containing PDFs or PowerPoint slides")
         if folder:
+            self.debug.logger.info("Opening folder: %s", folder)
             try:
-                self.add(sorted((p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() == ".pdf"), key=lambda p: p.name.casefold()))
+                self.add(sorted((p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in (".pdf", ".pptx")), key=lambda p: p.name.casefold()))
             except OSError as error:
+                self.debug.logger.exception("Could not read folder: %s", folder)
                 messagebox.showerror("Cannot open folder", str(error))
 
     def queue_previews(self, paths):
         added = self.library.add(paths)
         for item in added:
-            self.pending.append((item, self.executor.submit(inspect_pdf, item.path)))
+            self.debug.logger.info("Loading document: %s", item.path)
+            self.pending.append((item, self.executor.submit(self.converter.prepare, item.path)))
         return added
 
     def add(self, paths):
         if self.busy:
             return
         paths = [Path(path).resolve() for path in paths]
-        self.queue_previews(path for path in paths if path.suffix.lower() == ".pdf")
+        self.queue_previews(path for path in paths if path.suffix.lower() in (".pdf", ".pptx"))
         known = {item.archive for item in self.library.items if item.archive}
         known.update(path for path, _ in self.imports)
         for path in paths:
             if path.suffix.lower() == ".zip" and path not in known:
+                self.debug.logger.info("Importing ZIP: %s", path)
                 self.imports.append((path, self.executor.submit(self.archives.extract, path)))
                 known.add(path)
         self.render()
@@ -242,8 +281,10 @@ class App:
                 for entry in imported:
                     for item in self.queue_previews([entry.path]):
                         item.display_name, item.origin, item.archive = entry.name, entry.source, entry.archive
-                self.notice.set(f"{path.name}: added {len(imported)} PDF(s). Other file types were skipped.")
+                self.notice.set(f"{path.name}: added {len(imported)} document(s). Other file types were skipped.")
+                self.debug.logger.info("ZIP imported: %s (%d documents)", path.name, len(imported))
             except Exception as error:
+                self.debug.logger.exception("ZIP import failed: %s", path)
                 self.notice.set(f"Could not import {path.name}. Your existing files are unchanged.")
                 messagebox.showerror("Could not import ZIP", str(error))
             changed = True
@@ -254,10 +295,12 @@ class App:
             if item not in self.library.items:
                 continue
             try:
-                item.size, item.pages, item.preview = future.result()
+                item.pdf_path, item.size, item.pages, item.preview = future.result()
+                self.debug.logger.info("Document ready: %s (%d pages)", item.name, item.pages)
                 item.ready = True
             except Exception as error:
-                item.error = str(error) or "Cannot read this PDF."
+                item.error = str(error) or "Cannot read this document."
+                self.debug.logger.exception("Document preparation failed: %s", item.name)
             changed = True
         if changed:
             self.render()
@@ -276,7 +319,7 @@ class App:
         loading = sum(not item.ready and not item.error for item in self.library.items)
         errors = sum(bool(item.error) for item in self.library.items)
         self.count_label.configure(text=f"Your library  /  {len(self.library.items)}")
-        self.selection_label.configure(text=f"{len(chosen)} PDF{'s' if len(chosen) != 1 else ''} picked" if chosen else "Ready when you are")
+        self.selection_label.configure(text=f"{len(chosen)} file{'s' if len(chosen) != 1 else ''} picked" if chosen else "Ready when you are")
         text = f"{sum(item.pages for item in chosen)} pages  /  {format_size(sum(item.size for item in chosen))}"
         if self.busy:
             text = "Making your PDF..."
@@ -315,8 +358,8 @@ class App:
             empty.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
             self.text(empty, "", image=empty_art()).pack(pady=(32, 4))
             self.text(empty, "Meet your next perfectly ordered PDF.", 20, True).pack(pady=(0, 6))
-            self.text(empty, "Bring a few PDFs, or a ZIP full of them.\nWe'll help you put the pieces together.", 13, color=MUTED, justify="center").pack()
-            self.button(empty, "Add your first PDFs", self.add_files, BLUE, icon("plus"), width=182,
+            self.text(empty, "Bring PDFs, PowerPoint slides, or a ZIP full of them.\nWe'll help you put the pieces together.", 13, color=MUTED, justify="center").pack()
+            self.button(empty, "Add your first files", self.add_files, BLUE, icon("plus"), width=182,
                         text_color="white", hover_color="#185ABC").pack(pady=(20, 32))
         else:
             grid = self.view.get() == "grid"
@@ -347,8 +390,8 @@ class App:
         card.pdf_item = item
         header = ctk.CTkFrame(card, fg_color="transparent")
         header.grid(row=0, column=0 if grid else 2, sticky="ew", padx=14, pady=(12, 6))
-        self.text(header, "ZIP / PDF" if item.archive else "PDF", 10, True, ("#A1241C", "#F28B82"),
-                  fg_color=("#FCE8E6", "#432B34"), corner_radius=6, width=62 if item.archive else 38, height=23).pack(side="left")
+        self.text(header, ("ZIP / " if item.archive else "") + item.path.suffix[1:].upper(), 10, True, ("#A1241C", "#F28B82"),
+                  fg_color=("#FCE8E6", "#432B34"), corner_radius=6, width=78 if item.archive else 46, height=23).pack(side="left")
         pick = ctk.CTkButton(header, text=str(position) if checked else "Pick", command=lambda: self.toggle(item),
                             image=icon("check", "white", 14) if checked else icon("circle", MUTED, 16),
                             width=58, height=30, corner_radius=15, fg_color=BLUE if checked else SOFT,
@@ -370,8 +413,9 @@ class App:
         details.grid(row=2 if grid else 0, column=0 if grid else 1, rowspan=1 if grid else 2, sticky="nsew", padx=16 if grid else (4, 0), pady=(8, 14) if grid else 16)
         card.columnconfigure(0 if grid else 1, weight=1)
         self.text(details, item.name, 13, True, height=22, wraplength=190 if grid else 320, justify="left", anchor="w").pack(fill="x")
-        metadata = f"{item.pages} page{'s' if item.pages != 1 else ''}  /  {format_size(item.size)}" if item.ready else "Reading your PDF..."
-        self.text(details, metadata if not item.error else "Can't include this PDF", 11, height=18, color=MUTED if not item.error else ("#B3261E", "#F28B82"), anchor="w").pack(fill="x", pady=(4, 0))
+        unit = "slide" if item.path.suffix.lower() == ".pptx" else "page"
+        metadata = f"{item.pages} {unit}{'s' if item.pages != 1 else ''}  /  {format_size(item.size)}" if item.ready else "Converting slides..." if item.path.suffix.lower() == ".pptx" else "Reading your PDF..."
+        self.text(details, metadata if not item.error else "Can't include this file", 11, height=18, color=MUTED if not item.error else ("#B3261E", "#F28B82"), anchor="w").pack(fill="x", pady=(4, 0))
         if item.error:
             self.text(details, item.error, 11, color=("#B3261E", "#F28B82"), wraplength=190 if grid else 320, justify="left").pack(anchor="w", pady=(4, 0))
         elif item.origin:
@@ -448,6 +492,7 @@ class App:
         self.active = None
         self.photos.clear()
         self.notice.set("Fresh workspace. Bring something good together.")
+        self.debug.logger.debug("Workspace cleared")
         self.render()
 
     def set_busy(self, busy):
@@ -464,6 +509,15 @@ class App:
         target = filedialog.asksaveasfilename(title="Save your merged PDF", defaultextension=".pdf", initialfile="merged.pdf", filetypes=[("PDF files", "*.pdf")])
         if not target:
             return
+        protected = {item.path.resolve() for item in self.library.items}
+        protected.update(item.archive.resolve() for item in self.library.items if item.archive)
+        if Path(target).resolve() in protected:
+            self.debug.logger.warning("Blocked overwriting a source document: %s", target)
+            messagebox.showerror("Choose a different destination", "Source PDFs, presentations, and ZIPs cannot be overwritten. Choose a new filename or location.")
+            return
+        self.debug.logger.info("Merging %d document(s) to %s", len(paths), target)
+        for index, item in enumerate(self.library.chosen, 1):
+            self.debug.logger.info("  %d. %s (%d pages)", index, item.name, item.pages)
         self.set_busy(True)
         future = self.executor.submit(merge_pdfs, paths, target)
         self.root.after(80, self.poll_merge, future, target)
@@ -476,9 +530,11 @@ class App:
         try:
             future.result()
         except Exception as error:
+            self.debug.logger.exception("PDF merge failed")
             self.notice.set("That merge didn't work. Your original files are safe.")
             messagebox.showerror("Could not merge PDFs", str(error))
         else:
+            self.debug.logger.info("Merge saved: %s", target)
             self.notice.set(f"All together now. Saved to {target}")
             messagebox.showinfo("Your PDF is ready", f"Merged PDF saved to:\n{target}")
 
@@ -504,9 +560,18 @@ class App:
         icon.cache_clear()
         gc.collect()
         self.root.destroy()
+        self.debug.close()
         if self.gc_was_enabled:
             gc.enable()
 
 
 if __name__ == "__main__":
-    App(ctk.CTk()).root.mainloop()
+    debug = DebugLog()
+    try:
+        App(ctk.CTk(), debug_log=debug).root.mainloop()
+    except Exception:
+        debug.logger.exception("Application startup failed")
+        messagebox.showerror("Earl Gray could not start", f"See the startup log:\n{debug.path}")
+        raise
+    finally:
+        debug.close()

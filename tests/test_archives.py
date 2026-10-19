@@ -60,7 +60,7 @@ class ArchiveTests(unittest.TestCase):
         with zipfile.ZipFile(self.archive, "w") as output:
             output.write(self.pdf, "one.pdf")
             output.write(self.pdf, "two.pdf")
-        for setting, limit in (("MAX_PDFS", 1), ("MAX_PDF_BYTES", 1), ("MAX_TOTAL_BYTES", 1)):
+        for setting, limit in (("MAX_DOCUMENTS", 1), ("MAX_DOCUMENT_BYTES", 1), ("MAX_TOTAL_BYTES", 1)):
             with self.subTest(setting=setting), patch(f"archives.{setting}", limit):
                 with self.assertRaises(ValueError):
                     self.store.extract(self.archive)
